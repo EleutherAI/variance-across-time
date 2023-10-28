@@ -158,11 +158,11 @@ if __name__ == '__main__':
         T.ToTensor(),
     ])
     nontest = CIFAR10(
-        root='./data', train=False, download=True, transform=trf,
+        root='./cifar-train', train=False, download=True, transform=trf,
     )
     train, val = random_split(nontest, [0.9, 0.1])
     test = CIFAR10(
-        root='./data', train=False, download=True, transform=T.ToTensor(),
+        root='./cifar-test', train=False, download=True, transform=T.ToTensor(),
     )
 
     dm = pl.LightningDataModule.from_datasets(

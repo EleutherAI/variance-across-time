@@ -160,6 +160,8 @@ cython_debug/
 #.idea/
 
 # Folders that might be created when running the experiments
+cifar-train/
+cifar-test/
 checkpoints/
 data/
 lightning_logs/
