@@ -9,6 +9,7 @@ from torch.func import functional_call, stack_module_state
 from torch.utils.data import random_split
 from torchvision.datasets import CIFAR10
 from vit_pytorch import ViT
+# from vit import ViT
 
 import pytorch_lightning as pl
 import torch
@@ -30,13 +31,25 @@ class Ensemble(pl.LightningModule):
         self.save_hyperparameters()
 
         models = [
-            patched_resnet18(num_classes=10).to(torch.bfloat16)
+            ViT(
+                image_size=32,
+                patch_size=4,
+                num_classes=10,
+                dim=512,
+                depth=6,
+                heads=8,
+                mlp_dim=512,
+                dropout=0.1,
+                emb_dropout=0.1,
+            ).to(torch.bfloat16).cuda()
+            # patched_resnet18(num_classes=10).to(torch.bfloat16)
             for _ in range(num_models)
         ]
         self.params, self.bufs = stack_module_state(models) # type: ignore[arg-type]
         self.template = models[0]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        @torch.compile
         @partial(torch.vmap, in_dims=(0, 0, None), randomness="same")
         def fmodel(params, bufs, x):
             return functional_call(self.template, (params, bufs), x)
@@ -46,14 +59,6 @@ class Ensemble(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
         logits = self(x)
-
-        with torch.no_grad():
-            denom = math.log(len(logits))
-            lps = logits.log_softmax(dim=-1)
-            mixture_lps = lps.logsumexp(dim=0).sub(denom)
-
-            jsd = torch.sum(lps.exp() * (lps - mixture_lps), dim=-1).mean()
-            self.log('train_jsd', jsd)
 
         y_broadcast = y.expand(len(logits), -1).flatten()
         loss = torch.nn.functional.cross_entropy(logits.flatten(0, 1), y_broadcast)
@@ -71,6 +76,7 @@ class Ensemble(pl.LightningModule):
 
             jsd = torch.sum(lps.exp() * (lps - mixture_lps), dim=-1).mean()
             self.log('val_jsd', jsd)
+            self.log('val_variance', lps.exp().var(dim=0).mean())
 
         y_broadcast = y.expand(len(logits), -1).flatten()
         loss = torch.nn.functional.cross_entropy(logits.flatten(0, 1), y_broadcast)
@@ -95,7 +101,8 @@ class Ensemble(pl.LightningModule):
         return loss
     
     def configure_optimizers(self):
-        opt = optim.SGD(self.params.values(), lr=0.005, momentum=0.9, weight_decay=5e-4)
+        # opt = optim.SGD(self.params.values(), lr=0.005, momentum=0.9, weight_decay=5e-4)
+        opt = optim.RAdam(self.params.values(), lr=3e-4, weight_decay=1e-4, foreach=False)
         schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=200)
         return [opt], [schedule]
 
@@ -125,14 +132,18 @@ if __name__ == '__main__':
     torch.set_float32_matmul_precision("high")
 
     parser = ArgumentParser()
-    parser.add_argument('num_models', type=int, default=128)
+    parser.add_argument('name', type=str)
+    parser.add_argument('--num_models', type=int, default=128)
     args = parser.parse_args()
 
     with torch.device("cuda"):
         ensemble = Ensemble(args.num_models)
 
     trf = T.Compose([
-        T.ToTensor(), T.RandomHorizontalFlip(), T.RandomCrop(32, padding=4),
+        T.RandomHorizontalFlip(),
+        T.RandomCrop(32, padding=4),
+        T.AutoAugment(policy=T.AutoAugmentPolicy.CIFAR10),
+        T.ToTensor(),
     ])
     nontest = CIFAR10(
         root='./data', train=False, download=True, transform=trf,
@@ -143,11 +154,14 @@ if __name__ == '__main__':
     )
 
     dm = pl.LightningDataModule.from_datasets(
-        train, val, test, batch_size=128, num_workers=8
+        train, val, test, batch_size=32, num_workers=8
     )
     trainer = pl.Trainer(
+        accumulate_grad_batches=4,
         callbacks=[LogSpacedCheckpoint(dirpath='./checkpoints')],
-        logger=WandbLogger(project='variance-across-time', entity='eleutherai'),
+        logger=WandbLogger(
+            args.name, project='variance-across-time', entity='eleutherai'
+        ),
         max_epochs=200,
     )
     trainer.fit(ensemble, dm)
