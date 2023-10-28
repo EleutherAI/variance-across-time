@@ -16,6 +16,14 @@ import torch
 import torchvision.transforms as T
 
 
+def mangle_name(name: str) -> str:
+    return name.replace('.', '-')
+
+
+def unmangle_name(name: str) -> str:
+    return name.replace('-', '.')
+
+
 def patched_resnet18(num_classes: int):
     from torchvision.models import resnet18
 
@@ -45,16 +53,21 @@ class Ensemble(pl.LightningModule):
             # patched_resnet18(num_classes=10).to(torch.bfloat16)
             for _ in range(num_models)
         ]
-        self.params, self.bufs = stack_module_state(models) # type: ignore[arg-type]
-        self.template = models[0]
+        template = models[0]
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        @torch.compile
+        params, bufs = stack_module_state(models) # type: ignore[arg-type]
+        self.params = nn.ParameterDict({
+            mangle_name(k): v for k, v in params.items()
+        })
+        self.bufs = nn.ParameterDict({
+            mangle_name(k): v for k, v in bufs.items()
+        })
+
         @partial(torch.vmap, in_dims=(0, 0, None), randomness="same")
         def fmodel(params, bufs, x):
-            return functional_call(self.template, (params, bufs), x)
-
-        return fmodel(self.params, self.bufs, x)
+            return functional_call(template, (params, bufs), x)
+        
+        self.forward = partial(fmodel, params, bufs)
 
     def training_step(self, batch, batch_idx):
         x, y = batch
@@ -101,7 +114,6 @@ class Ensemble(pl.LightningModule):
         return loss
     
     def configure_optimizers(self):
-        # opt = optim.SGD(self.params.values(), lr=0.005, momentum=0.9, weight_decay=5e-4)
         opt = optim.RAdam(self.params.values(), lr=3e-4, weight_decay=1e-4, foreach=False)
         schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=200)
         return [opt], [schedule]
@@ -133,7 +145,7 @@ if __name__ == '__main__':
 
     parser = ArgumentParser()
     parser.add_argument('name', type=str)
-    parser.add_argument('--num_models', type=int, default=128)
+    parser.add_argument('--num_models', type=int, default=256)
     args = parser.parse_args()
 
     with torch.device("cuda"):
@@ -154,10 +166,10 @@ if __name__ == '__main__':
     )
 
     dm = pl.LightningDataModule.from_datasets(
-        train, val, test, batch_size=32, num_workers=8
+        train, val, test, batch_size=1, num_workers=8
     )
     trainer = pl.Trainer(
-        accumulate_grad_batches=4,
+        accumulate_grad_batches=128,
         callbacks=[LogSpacedCheckpoint(dirpath='./checkpoints')],
         logger=WandbLogger(
             args.name, project='variance-across-time', entity='eleutherai'
