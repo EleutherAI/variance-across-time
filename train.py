@@ -16,6 +16,8 @@ import torch
 import torchvision.transforms as T
 
 
+NUM_STEPS = 2 ** 16
+
 def mangle_name(name: str) -> str:
     return name.replace('.', '-')
 
@@ -40,7 +42,7 @@ class Ensemble(pl.LightningModule):
                 mangle_name(k), nn.Parameter(v)
             )
 
-        @partial(torch.vmap, in_dims=(0, 0, None), randomness="same")
+        @partial(torch.vmap, in_dims=(0, 0, None), randomness="error")
         def fmodel(params, bufs, x):
             return functional_call(template, (params, bufs), x)
         
@@ -52,12 +54,10 @@ class Ensemble(pl.LightningModule):
             image_size=32,
             patch_size=4,
             num_classes=10,
-            dim=512,
+            dim=384,
             depth=6,
             heads=8,
-            mlp_dim=512,
-            dropout=0.1,
-            emb_dropout=0.1,
+            mlp_dim=384,
         )
 
     def training_step(self, batch, batch_idx):
@@ -111,8 +111,8 @@ class Ensemble(pl.LightningModule):
         return losses.sum()
 
     def configure_optimizers(self):
-        opt = optim.RAdam(self._params, lr=0.0005, foreach=False)
-        schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=2 ** 16)
+        opt = optim.RAdam(self._params, lr=0.0005)
+        schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=NUM_STEPS)
         return [opt], [{"scheduler": schedule, "interval": "step"}]
 
 
@@ -123,10 +123,10 @@ class RegNetEnsemble(Ensemble):
         model.stem.insert(0, nn.Upsample(scale_factor=2))
 
         return model
-    
+
     def configure_optimizers(self):
         opt = optim.SGD(self._params, lr=0.1, momentum=0.9, weight_decay=5e-5)
-        schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=2 ** 16)
+        schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=NUM_STEPS)
         return [opt], [{"scheduler": schedule, "interval": "step"}]
 
 
@@ -143,7 +143,9 @@ class LogSpacedCheckpoint(pl.Callback):
     def on_train_batch_end(self, trainer: pl.Trainer, *_):
         if trainer.global_step >= self.next:
             self.next = round(self.next * self.base)
-            trainer.save_checkpoint(self.dirpath + f"/step={trainer.global_step}.ckpt")
+            trainer.save_checkpoint(
+                self.dirpath + f"/step={trainer.global_step}.ckpt", weights_only=True
+            )
 
 
 if __name__ == '__main__':
@@ -162,7 +164,7 @@ if __name__ == '__main__':
     trf = T.Compose([
         T.RandomHorizontalFlip(),
         T.RandomCrop(32, padding=4),
-        T.AutoAugment(policy=T.AutoAugmentPolicy.CIFAR10),
+        T.RandAugment(),
         T.ToTensor(),
     ])
     train = CIFAR10(
@@ -189,8 +191,9 @@ if __name__ == '__main__':
         logger=WandbLogger(
             args.name, project='variance-across-time', entity='eleutherai'
         ),
-        max_steps=2 ** 16,
+        max_steps=NUM_STEPS,
         # Mixed precision with (b)float16 activations
         precision="bf16-mixed" if has_bf16 else 16,
     )
     trainer.fit(ensemble, dm)
+    trainer.test(ensemble, dm)
