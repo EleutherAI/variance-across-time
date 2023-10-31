@@ -2,6 +2,7 @@ from argparse import ArgumentParser
 from dataclasses import dataclass
 from functools import partial
 import math
+import torchvision as tv
 
 from pytorch_lightning.loggers import WandbLogger
 from torch import nn, optim
@@ -9,7 +10,6 @@ from torch.func import functional_call, stack_module_state
 from torch.utils.data import random_split
 from torchvision.datasets import CIFAR10
 from vit_pytorch import ViT
-# from vit import ViT
 
 import pytorch_lightning as pl
 import torch
@@ -24,60 +24,60 @@ def unmangle_name(name: str) -> str:
     return name.replace('-', '.')
 
 
-def patched_resnet18(num_classes: int):
-    from torchvision.models import resnet18
-
-    model = resnet18(num_classes=num_classes)
-    model.maxpool = torch.nn.Identity() # type: ignore[attr-type]
-
-    return model
-
-
 class Ensemble(pl.LightningModule):
-    def __init__(self, num_models: int):
+    def __init__(self, num_models: int, dtype: torch.dtype = torch.bfloat16):
         super().__init__()
         self.save_hyperparameters()
 
-        models = [
-            ViT(
-                image_size=32,
-                patch_size=4,
-                num_classes=10,
-                dim=512,
-                depth=6,
-                heads=8,
-                mlp_dim=512,
-                dropout=0.1,
-                emb_dropout=0.1,
-            ).to(torch.bfloat16).cuda()
-            # patched_resnet18(num_classes=10).to(torch.bfloat16)
-            for _ in range(num_models)
-        ]
+        models = [self.build_net().to(dtype) for _ in range(num_models)]
         template = models[0]
 
         params, bufs = stack_module_state(models) # type: ignore[arg-type]
-        self.params = nn.ParameterDict({
-            mangle_name(k): v for k, v in params.items()
-        })
-        self.bufs = nn.ParameterDict({
-            mangle_name(k): v for k, v in bufs.items()
-        })
+        for k, v in bufs.items():
+            self.register_buffer(mangle_name(k), v)
+        for k, v in params.items():
+            self.register_parameter(
+                mangle_name(k), nn.Parameter(v)
+            )
 
         @partial(torch.vmap, in_dims=(0, 0, None), randomness="same")
         def fmodel(params, bufs, x):
             return functional_call(template, (params, bufs), x)
         
         self.forward = partial(fmodel, params, bufs)
+        self._params = params.values()
+    
+    def build_net(self):
+        return ViT(
+            image_size=32,
+            patch_size=4,
+            num_classes=10,
+            dim=512,
+            depth=6,
+            heads=8,
+            mlp_dim=512,
+            dropout=0.1,
+            emb_dropout=0.1,
+        )
 
     def training_step(self, batch, batch_idx):
         x, y = batch
         logits = self(x)
 
-        y_broadcast = y.expand(len(logits), -1).flatten()
-        loss = torch.nn.functional.cross_entropy(logits.flatten(0, 1), y_broadcast)
-        self.log('train_loss', loss)
-        return loss
-    
+        with torch.no_grad():
+            denom = math.log(len(logits))
+            lps = logits.log_softmax(dim=-1)
+            mixture_lps = lps.logsumexp(dim=0).sub(denom)
+
+            jsd = torch.sum(lps.exp() * (lps - mixture_lps), dim=-1).mean()
+            self.log('train_jsd', jsd, on_step=True)
+
+        loss_fn = torch.vmap(torch.nn.functional.cross_entropy, (0, None), 0)
+        losses = loss_fn(logits, y)
+        self.log('train_loss', losses.mean(), on_step=True, prog_bar=True)
+
+        return losses.sum()
+
     def validation_step(self, batch, batch_idx):
         x, y = batch
         logits = self(x)
@@ -91,32 +91,43 @@ class Ensemble(pl.LightningModule):
             self.log('val_jsd', jsd)
             self.log('val_variance', lps.exp().var(dim=0).mean())
 
-        y_broadcast = y.expand(len(logits), -1).flatten()
-        loss = torch.nn.functional.cross_entropy(logits.flatten(0, 1), y_broadcast)
-        self.log('val_loss', loss)
-        return loss
-    
+        loss_fn = torch.vmap(torch.nn.functional.cross_entropy, (0, None), 0)
+        losses = loss_fn(logits, y)
+        self.log('val_loss', losses.mean())
+
+        acc = logits.argmax(dim=-1).eq(y).float().mean()
+        self.log('val_acc', acc, on_step=False, on_epoch=True)
+
+        return losses.sum()
+
     def test_step(self, batch, batch_idx):
         x, y = batch
         logits = self(x)
 
-        with torch.no_grad():
-            denom = math.log(len(logits))
-            lps = logits.log_softmax(dim=-1)
-            mixture_lps = lps.logsumexp(dim=0).sub(denom)
+        loss_fn = torch.vmap(torch.nn.functional.cross_entropy, (0, None), 0)
+        losses = loss_fn(logits, y)
+        self.log('test_loss', losses.mean())
 
-            jsd = torch.sum(lps.exp() * (lps - mixture_lps), dim=-1).mean()
-            self.log('test_jsd', jsd)
+        return losses.sum()
 
-        y_broadcast = y.expand(len(logits), -1).flatten()
-        loss = torch.nn.functional.cross_entropy(logits.flatten(0, 1), y_broadcast)
-        self.log('test_loss', loss)
-        return loss
+    def configure_optimizers(self):
+        opt = optim.RAdam(self._params, lr=0.0005, foreach=False)
+        schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=2 ** 16)
+        return [opt], [{"scheduler": schedule, "interval": "step"}]
+
+
+class RegNetEnsemble(Ensemble):
+    def build_net(self):
+        model = tv.models.regnet_y_400mf(num_classes=10)
+        model.stem[0].stride = 1
+        model.stem.insert(0, nn.Upsample(scale_factor=2))
+
+        return model
     
     def configure_optimizers(self):
-        opt = optim.RAdam(self.params.values(), lr=3e-4, weight_decay=1e-4, foreach=False)
-        schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=200)
-        return [opt], [schedule]
+        opt = optim.SGD(self._params, lr=0.1, momentum=0.9, weight_decay=5e-5)
+        schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=2 ** 16)
+        return [opt], [{"scheduler": schedule, "interval": "step"}]
 
 
 @dataclass
@@ -127,6 +138,7 @@ class LogSpacedCheckpoint(pl.Callback):
 
     base: float = 2.0
     next: int = 1
+    """One-indexed step number of the next checkpoint to save"""
 
     def on_train_batch_end(self, trainer: pl.Trainer, *_):
         if trainer.global_step >= self.next:
@@ -138,18 +150,14 @@ if __name__ == '__main__':
     SEED = 0
     torch.cuda.manual_seed_all(SEED)
     torch.manual_seed(SEED)
-    torch.set_default_dtype(torch.bfloat16)
 
     # Use Tensor Cores even for float32
     torch.set_float32_matmul_precision("high")
 
     parser = ArgumentParser()
     parser.add_argument('name', type=str)
-    parser.add_argument('--num_models', type=int, default=256)
+    parser.add_argument('--num_models', type=int, default=32)
     args = parser.parse_args()
-
-    with torch.device("cuda"):
-        ensemble = Ensemble(args.num_models)
 
     trf = T.Compose([
         T.RandomHorizontalFlip(),
@@ -157,24 +165,32 @@ if __name__ == '__main__':
         T.AutoAugment(policy=T.AutoAugmentPolicy.CIFAR10),
         T.ToTensor(),
     ])
-    nontest = CIFAR10(
-        root='./cifar-train', train=False, download=True, transform=trf,
+    train = CIFAR10(
+        root='./cifar-train', train=True, download=True, transform=trf,
     )
-    train, val = random_split(nontest, [0.9, 0.1])
-    test = CIFAR10(
+    nontrain = CIFAR10(
         root='./cifar-test', train=False, download=True, transform=T.ToTensor(),
     )
+    val, test = random_split(nontrain, [0.1, 0.9])
 
     dm = pl.LightningDataModule.from_datasets(
-        train, val, test, batch_size=1, num_workers=8
+        train, val, test, batch_size=128, num_workers=8
     )
+
+    # Split the total number of models requested into the number of GPUs
+    with torch.device("cuda"):
+        has_bf16 = torch.cuda.is_bf16_supported()
+        ensemble = Ensemble(
+            args.num_models, dtype=torch.bfloat16 if has_bf16 else torch.float16
+        )
+
     trainer = pl.Trainer(
-        accumulate_grad_batches=128,
         callbacks=[LogSpacedCheckpoint(dirpath='./checkpoints')],
         logger=WandbLogger(
             args.name, project='variance-across-time', entity='eleutherai'
         ),
-        max_epochs=200,
+        max_steps=2 ** 16,
+        # Mixed precision with (b)float16 activations
+        precision="bf16-mixed" if has_bf16 else 16,
     )
     trainer.fit(ensemble, dm)
-    trainer.test(ensemble, dm)
