@@ -1,15 +1,17 @@
 from argparse import ArgumentParser
-from dataclasses import dataclass
+from contextlib import nullcontext
+from copy import deepcopy
 from functools import partial
+from pathlib import Path
 import math
-import torchvision as tv
+import tempfile
 
-from pytorch_lightning.loggers import WandbLogger
 from torch import nn, optim
 from torch.func import functional_call, stack_module_state
+from torch.optim.optimizer import Optimizer
 from torch.utils.data import random_split
 from torchvision.datasets import CIFAR10
-from vit_pytorch import ViT
+from transformers import ViTConfig, ViTForImageClassification
 
 import pytorch_lightning as pl
 import torch
@@ -18,51 +20,73 @@ import torchvision.transforms as T
 
 NUM_STEPS = 2 ** 16
 
-def mangle_name(name: str) -> str:
-    return name.replace('.', '-')
-
-
-def unmangle_name(name: str) -> str:
-    return name.replace('-', '.')
-
-
 class Ensemble(pl.LightningModule):
-    def __init__(self, num_models: int, dtype: torch.dtype = torch.bfloat16):
+    def __init__(
+        self, seed: int, num_models: int, rsync_dest: str | None = None
+    ):
         super().__init__()
         self.save_hyperparameters()
 
-        models = [self.build_net().to(dtype) for _ in range(num_models)]
-        template = models[0]
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        self.models = nn.ModuleList()
 
-        params, bufs = stack_module_state(models) # type: ignore[arg-type]
-        for k, v in bufs.items():
-            self.register_buffer(mangle_name(k), v)
-        for k, v in params.items():
-            self.register_parameter(
-                mangle_name(k), nn.Parameter(v)
-            )
+        for offset in range(num_models):
+            torch.cuda.manual_seed_all(seed + offset)
+            torch.manual_seed(seed + offset)
+
+            self.models.append(self.build_net().to(dtype))
+
+    def build_net(self) -> nn.Module:
+        d = 384
+    
+        cfg = ViTConfig(
+            hidden_size=d,
+            image_size=32,
+            intermediate_size=d,
+            num_attention_heads=8,
+            num_hidden_layers=6,
+            num_labels=10,
+            patch_size=4,
+        )
+        vit = ViTForImageClassification(cfg)
+
+        # HuggingFace initialization is terrible; use PyTorch init instead
+        for m in vit.modules():
+            if isinstance(m, nn.Linear):
+                m.reset_parameters()
+
+        return vit
+
+    def configure_optimizers(self):
+        params, bufs = stack_module_state(list(self.models))
+        template = self.models[0]
 
         @partial(torch.vmap, in_dims=(0, 0, None), randomness="error")
         def fmodel(params, bufs, x):
             return functional_call(template, (params, bufs), x)
-        
+
+        # forward should call vmap
         self.forward = partial(fmodel, params, bufs)
-        self._params = params.values()
-    
-    def build_net(self):
-        return ViT(
-            image_size=32,
-            patch_size=4,
-            num_classes=10,
-            dim=384,
-            depth=6,
-            heads=8,
-            mlp_dim=384,
-        )
+
+        # Replace the parameters in each module with a view onto the stacked params.
+        # This allows us to easily run and save each model individually, while still
+        # using torch.vmap and training them all in a vectorized fashion.
+        for i, model in enumerate(self.models):
+            for name, buf in model.named_buffers():
+                buf.data = bufs[name][i]
+            for name, param in model.named_parameters():
+                param.data = params[name][i]
+
+        opt = optim.RAdam(params.values(), lr=0.0005)
+        schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=NUM_STEPS)
+        return [opt], [{"scheduler": schedule, "interval": "step"}]
 
     def training_step(self, batch, batch_idx):
+        return self.shared_step(batch, 'train')
+
+    def shared_step(self, batch, stage: str):
         x, y = batch
-        logits = self(x)
+        logits = self(x).logits
 
         with torch.no_grad():
             denom = math.log(len(logits))
@@ -70,95 +94,73 @@ class Ensemble(pl.LightningModule):
             mixture_lps = lps.logsumexp(dim=0).sub(denom)
 
             jsd = torch.sum(lps.exp() * (lps - mixture_lps), dim=-1).mean()
-            self.log('train_jsd', jsd, on_step=True)
+            self.log(f'{stage}_jsd', jsd, on_step=True)
 
         loss_fn = torch.vmap(torch.nn.functional.cross_entropy, (0, None), 0)
         losses = loss_fn(logits, y)
-        self.log('train_loss', losses.mean(), on_step=True, prog_bar=True)
+        self.log(f'{stage}_loss', losses.mean())
 
+        self.log(
+            f'{stage}_acc',
+            logits.argmax(dim=-1).eq(y).float().mean(),
+            on_epoch=not self.training,
+            on_step=self.training,
+            prog_bar=(stage == 'val'),
+        )
         return losses.sum()
-
+    
     def validation_step(self, batch, batch_idx):
-        x, y = batch
-        logits = self(x)
-
-        with torch.no_grad():
-            denom = math.log(len(logits))
-            lps = logits.log_softmax(dim=-1)
-            mixture_lps = lps.logsumexp(dim=0).sub(denom)
-
-            jsd = torch.sum(lps.exp() * (lps - mixture_lps), dim=-1).mean()
-            self.log('val_jsd', jsd)
-            self.log('val_variance', lps.exp().var(dim=0).mean())
-
-        loss_fn = torch.vmap(torch.nn.functional.cross_entropy, (0, None), 0)
-        losses = loss_fn(logits, y)
-        self.log('val_loss', losses.mean())
-
-        acc = logits.argmax(dim=-1).eq(y).float().mean()
-        self.log('val_acc', acc, on_step=False, on_epoch=True)
-
-        return losses.sum()
+        self.shared_step(batch, 'val')
 
     def test_step(self, batch, batch_idx):
-        x, y = batch
-        logits = self(x)
+        self.shared_step(batch, 'test')
 
-        loss_fn = torch.vmap(torch.nn.functional.cross_entropy, (0, None), 0)
-        losses = loss_fn(logits, y)
-        self.log('test_loss', losses.mean())
+    def on_before_zero_grad(self, optimizer: Optimizer) -> None:
+        # Log spaced checkpoints
+        step = self.global_step + 1
 
-        return losses.sum()
+        # Only save checkpoints at powers of 2
+        if not math.log2(step).is_integer():
+            return
 
-    def configure_optimizers(self):
-        opt = optim.RAdam(self._params, lr=0.0005)
-        schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=NUM_STEPS)
-        return [opt], [{"scheduler": schedule, "interval": "step"}]
+        self.print(f"Saving step {step} checkpoints")
+        dest = self.hparams.get('rsync_dest')
 
+        with tempfile.TemporaryDirectory() if dest else nullcontext() as log_dir:
+            log_dir = log_dir or self.trainer.log_dir
+            assert log_dir is not None
 
-class RegNetEnsemble(Ensemble):
-    def build_net(self):
-        model = tv.models.regnet_y_400mf(num_classes=10)
-        model.stem[0].stride = 1
-        model.stem.insert(0, nn.Upsample(scale_factor=2))
+            for i, model in enumerate(self.models):
+                # Weird thing we have to do to prevent PyTorch from saving the entire
+                # stack of models in the checkpoint instead of just the one we want
+                model = deepcopy(model)
 
-        return model
+                p = Path(f"{log_dir}/model_{i}/step={step}.pt")
+                p.parent.mkdir(parents=True, exist_ok=True)
 
-    def configure_optimizers(self):
-        opt = optim.SGD(self._params, lr=0.1, momentum=0.9, weight_decay=5e-5)
-        schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=NUM_STEPS)
-        return [opt], [{"scheduler": schedule, "interval": "step"}]
+                torch.save(model.state_dict(), p)
 
+            # Push to rsync
+            if dest:
+                self.print(f"Pushing to {dest}")
 
-@dataclass
-class LogSpacedCheckpoint(pl.Callback):
-    """Save checkpoints at log-spaced intervals"""
-
-    dirpath: str
-
-    base: float = 2.0
-    next: int = 1
-    """One-indexed step number of the next checkpoint to save"""
-
-    def on_train_batch_end(self, trainer: pl.Trainer, *_):
-        if trainer.global_step >= self.next:
-            self.next = round(self.next * self.base)
-            trainer.save_checkpoint(
-                self.dirpath + f"/step={trainer.global_step}.ckpt", weights_only=True
-            )
-
+                import sysrsync
+                sysrsync.run(
+                    source=str(log_dir),
+                    destination=dest,
+                    options=["-a"],
+                )
 
 if __name__ == '__main__':
-    SEED = 0
-    torch.cuda.manual_seed_all(SEED)
-    torch.manual_seed(SEED)
-
     # Use Tensor Cores even for float32
     torch.set_float32_matmul_precision("high")
 
     parser = ArgumentParser()
     parser.add_argument('name', type=str)
-    parser.add_argument('--num_models', type=int, default=32)
+    parser.add_argument('--device', type=int, default=0)
+    parser.add_argument('--num-models', type=int, default=32)
+    parser.add_argument('--rsync-dest', type=str, default=None)
+    parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
 
     trf = T.Compose([
@@ -173,27 +175,30 @@ if __name__ == '__main__':
     nontrain = CIFAR10(
         root='./cifar-test', train=False, download=True, transform=T.ToTensor(),
     )
+    # Use the fixed seed 0 to do the val-test split
+    torch.manual_seed(0)
     val, test = random_split(nontrain, [0.1, 0.9])
 
+    # Set the random seed used for initializing the models
+    torch.cuda.manual_seed_all(args.seed)
+    torch.manual_seed(args.seed)
+
+    print(f"\033[92m--- Using seed {args.seed} ---\033[0m")
+
     dm = pl.LightningDataModule.from_datasets(
-        train, val, test, batch_size=128, num_workers=8
+        train, val, test, batch_size=128, num_workers=4
     )
 
     # Split the total number of models requested into the number of GPUs
-    with torch.device("cuda"):
-        has_bf16 = torch.cuda.is_bf16_supported()
+    with torch.device(f"cuda:{args.device}"):
         ensemble = Ensemble(
-            args.num_models, dtype=torch.bfloat16 if has_bf16 else torch.float16
+            args.seed, args.num_models, args.rsync_dest
         )
 
     trainer = pl.Trainer(
-        callbacks=[LogSpacedCheckpoint(dirpath='./checkpoints')],
-        logger=WandbLogger(
-            args.name, project='variance-across-time', entity='eleutherai'
-        ),
         max_steps=NUM_STEPS,
         # Mixed precision with (b)float16 activations
-        precision="bf16-mixed" if has_bf16 else 16,
+        precision="bf16-mixed" if torch.cuda.is_bf16_supported() else 16,
     )
     trainer.fit(ensemble, dm)
     trainer.test(ensemble, dm)
