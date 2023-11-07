@@ -166,3 +166,5 @@ checkpoints/
 data/
 lightning_logs/
 wandb/
+
+*.pt

@@ -6,12 +6,16 @@ from pathlib import Path
 import math
 import tempfile
 
+from pytorch_lightning.loggers import WandbLogger
 from torch import nn, optim
 from torch.func import functional_call, stack_module_state
 from torch.optim.optimizer import Optimizer
 from torch.utils.data import random_split
 from torchvision.datasets import CIFAR10
-from transformers import ViTConfig, ViTForImageClassification
+from transformers import (
+    ConvNextV2Config, ConvNextV2ForImageClassification,
+    get_cosine_schedule_with_warmup,
+)
 
 import pytorch_lightning as pl
 import torch
@@ -27,7 +31,7 @@ class Ensemble(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
 
-        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        dtype = torch.float32
         self.models = nn.ModuleList()
 
         for offset in range(num_models):
@@ -37,31 +41,30 @@ class Ensemble(pl.LightningModule):
             self.models.append(self.build_net().to(dtype))
 
     def build_net(self) -> nn.Module:
-        d = 384
-    
-        cfg = ViTConfig(
-            hidden_size=d,
+        cfg = ConvNextV2Config(
             image_size=32,
-            intermediate_size=d,
-            num_attention_heads=8,
-            num_hidden_layers=6,
+            # Femto architecture
+            depths=[2, 2, 6, 2],
+            hidden_sizes=[48, 96, 192, 384],
             num_labels=10,
-            patch_size=4,
+            # The default of 4 x 4 patches shrinks the image too aggressively for
+            # low-resolution images like CIFAR-10
+            patch_size=2,
         )
-        vit = ViTForImageClassification(cfg)
+        model = ConvNextV2ForImageClassification(cfg)
 
         # HuggingFace initialization is terrible; use PyTorch init instead
-        for m in vit.modules():
-            if isinstance(m, nn.Linear):
+        for m in model.modules():
+            if isinstance(m, (nn.Conv2d, nn.Linear)):
                 m.reset_parameters()
 
-        return vit
+        return model
 
     def configure_optimizers(self):
         params, bufs = stack_module_state(list(self.models))
         template = self.models[0]
 
-        @partial(torch.vmap, in_dims=(0, 0, None), randomness="error")
+        @partial(torch.vmap, in_dims=(0, 0, None), randomness="different")
         def fmodel(params, bufs, x):
             return functional_call(template, (params, bufs), x)
 
@@ -77,8 +80,8 @@ class Ensemble(pl.LightningModule):
             for name, param in model.named_parameters():
                 param.data = params[name][i]
 
-        opt = optim.RAdam(params.values(), lr=0.0005)
-        schedule = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=NUM_STEPS)
+        opt = optim.AdamW(params.values(), lr=0.002, weight_decay=0.05)
+        schedule = get_cosine_schedule_with_warmup(opt, 1_000, NUM_STEPS)
         return [opt], [{"scheduler": schedule, "interval": "step"}]
 
     def training_step(self, batch, batch_idx):
@@ -157,7 +160,6 @@ if __name__ == '__main__':
 
     parser = ArgumentParser()
     parser.add_argument('name', type=str)
-    parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--num-models', type=int, default=32)
     parser.add_argument('--rsync-dest', type=str, default=None)
     parser.add_argument('--seed', type=int, default=0)
@@ -186,19 +188,19 @@ if __name__ == '__main__':
     print(f"\033[92m--- Using seed {args.seed} ---\033[0m")
 
     dm = pl.LightningDataModule.from_datasets(
-        train, val, test, batch_size=128, num_workers=4
+        train, val, test, batch_size=64, num_workers=4,
+    )
+    ensemble = Ensemble(
+        args.seed, args.num_models, args.rsync_dest
     )
 
-    # Split the total number of models requested into the number of GPUs
-    with torch.device(f"cuda:{args.device}"):
-        ensemble = Ensemble(
-            args.seed, args.num_models, args.rsync_dest
-        )
-
     trainer = pl.Trainer(
+        logger=WandbLogger(
+            name=args.name, project="variance-across-time", entity="eleutherai"
+        ),
         max_steps=NUM_STEPS,
         # Mixed precision with (b)float16 activations
-        precision="bf16-mixed" if torch.cuda.is_bf16_supported() else 16,
+        precision="16-mixed",
     )
     trainer.fit(ensemble, dm)
     trainer.test(ensemble, dm)
