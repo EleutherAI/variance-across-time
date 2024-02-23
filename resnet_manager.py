@@ -3,11 +3,11 @@ import re
 
 import torch as t
 import torchvision
-from transformers import (ConvNextV2Config,
-                          ConvNextV2ForImageClassification, AutoConfig)
+from transformers import ConvNextV2Config, ConvNextV2ForImageClassification
 
 import pytorch_lightning as pl
 
+# TODO add doc comments!
 
 # a singular instance of a RestNet
 class ConvNet(t.nn.Module):
@@ -30,9 +30,9 @@ class ConvNet(t.nn.Module):
             local_files_only=True
         )
         
-
     def forward(self, x):
-        self.model(x)
+        return self.model(x)
+
 
 class ConvNetTimeLapse(t.nn.Module):
     _checkpoint_name_fmt = "step=(\\d*).pt"
@@ -59,13 +59,17 @@ class ConvNetTimeLapse(t.nn.Module):
             self.models[step_no] = ConvNet(checkpoint)
         
         print(f"Successfully loaded {len(self.models)} checkpoints from {model_folder_path}")
-            
+    
     
     def forward(self, x):
-        pass
+        return {
+            step: self.models[step](x) for step in self.models
+        }
 
 if __name__ == "__main__":
     time_lapse = ConvNetTimeLapse('../warp_0/model_0')
-    # (t.ones(50, 32, 32, 3))
-    # print(time_lapse.models['1'](t.ones(32, 32, 3)))
+
+    rando = t.rand((5, 3, 32, 32), requires_grad=False)
+    with t.no_grad():
+        print(time_lapse(rando))
 
