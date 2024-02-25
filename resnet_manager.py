@@ -3,16 +3,11 @@ import re
 from itertools import product
 
 import torch as t
-# import torchvision
 from transformers import ConvNextV2Config, ConvNextV2ForImageClassification
-from sklearn.decomposition import PCA
 import pandas as pd
+from torch.utils.data import DataLoader
+# from pytorch_lightning import LightningDataModule, LightningModule
 
-device = 'cuda' if t.cuda.is_available() else 'cpu'
-
-# import pytorch_lightning as pl
-
-# TODO add doc comments!
 
 # a singular instance of a RestNet
 class ConvNet(t.nn.Module):
@@ -45,18 +40,18 @@ class ConvNetTimeLapse(t.nn.Module):
     statistics.
     """
     _checkpoint_name_fmt = "step=(\\d*).pt"
-    
+
     def __init__(self, model_folder_path: str, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.checkpoints = t.nn.ModuleDict()
         self.model_folder_path = model_folder_path
-        
+
         # find all .pt files in folder
         checkpoints = os.listdir(model_folder_path)
-        
+
         # keep only files that match naming convention
         checkpoints = filter(lambda x: re.match(self._checkpoint_name_fmt, x) is not None, checkpoints)
-        
+
         # concat full path to checkpoint
         checkpoints = map(lambda x: os.path.join(model_folder_path, x), checkpoints)
 
@@ -67,43 +62,57 @@ class ConvNetTimeLapse(t.nn.Module):
 
             # note that OrderedDict requires Str keys
             self.checkpoints[step_no] = ConvNet(checkpoint)
-        
+
         # ensure the is at least one valid checkpoint
         if len(self.checkpoints) == 0:
             raise FileExistsError(f"No valid checkpoints found in {model_folder_path}, valid checkpoint is named 'step=[step_no].pt'")
 
-        print(f"Successfully loaded {len(self.checkpoints)} checkpoints from {model_folder_path}")
-    
+        # print(f"Successfully loaded {len(self.checkpoints)} checkpoints from {model_folder_path}")
+
     def forward(self, x) -> dict[str, t.Tensor]:
         return {
             step: self.checkpoints[step](x) for step in self.checkpoints
         }
-    
-    def pca_logits(self, x: t.Tensor, components: int = 10) -> dict[str, t.Tensor]:
+
+    def pca_logits(
+        self,
+        x: t.Tensor,
+        components: int = 10
+    ) -> dict[str, t.Tensor]:
         """
-        Using x images (batch, channels, height, width), computes logits for each image.
-        Takes logits and creates vectors of the probabilities for each class (10, batch).
-        Run PCA on the  10 x batch sized matrix, returning an array (10, ) of the variance that
-        the top-10 components contribute.
-        
+        Using x images (batch, channels, height, width), computes variance
+        ratios for the principal components of the logits.
+
         Args:
             x (Tensor): images
-            components (int): number of components to report variance ratios for. Will be overriden if x.shape[0] < components. Defaults to 10
+            components (int): number of components to report variance ratios
+                for. Will be overriden if x.shape[0] < components. Defaults to 10
 
         Returns:
-            dict[str, t.Tensor]: dictionary of step: Principal component variance
+            dict[str, t.Tensor]: dictionary of step: Principal component variances
         """
-        pcas: dict[str, t.Tensor] = {}
-        pca = PCA(n_components=min([components, x.shape[0]]))
         
-        for step, checkpoint in self.checkpoints.items():
-            logits = checkpoint(x).logits
-            pca_out = pca.fit(logits)
-            pcas[step] = pca_out.explained_variance_ratio_
+        # assuming the dataset we're passing (CIFAR10) is large, batch the network forward
+        batch_x = DataLoader(x, batch_size=256, shuffle=False)
+        logits_acc: dict[str, t.Tensor] = {}
         
-        return pcas
+        for batch in batch_x:
+            for step, output in self(batch).items():
+                if step in logits_acc:
+                    logits_acc[step] = t.concat([logits_acc[step], output.logits])
+                else:
+                    logits_acc[step] = output.logits
 
-    
+        for step in logits_acc:
+            logits = logits_acc[step]
+            centered = logits - logits.mean(dim=0)
+            
+            e_vals, _ = t.linalg.eigh(t.matmul(centered.T, centered))
+            
+            logits_acc[step] = t.flip(e_vals, dims=(0, ))
+
+        return logits_acc
+
     def jsd_logits(self, x: t.Tensor) -> dict[str, t.Tensor]:
         pass
 
@@ -119,7 +128,8 @@ class ConvWarp:
         try:
             dirs = os.listdir(warp_path)
             self.models = t.nn.ModuleDict({
-                dir: ConvNetTimeLapse(os.path.join(warp_path, dir)) for dir in dirs
+                dir: ConvNetTimeLapse(os.path.join(warp_path, dir))
+                for dir in dirs
             })
         except FileExistsError:
             raise ValueError(f"Warp is malformed; ensure the provided folder ({warp_path}) contains valid models.")
@@ -127,36 +137,42 @@ class ConvWarp:
     def pca_over_time(
         self,
         x: t.Tensor,
-        component_buckets: list[int] = [1, 5, 9]
+        component_buckets: list[int] = [1, 5, 9],
+        device: str = "cpu"
     ) -> dict[int, pd.DataFrame]:
         pca_data = {
             k: pd.DataFrame() for k in component_buckets
         }
+
+        self.models = self.models.to(device)
+        self.models.eval()
+
         with t.no_grad():
-            for model_name, model in warp.models.items():
+            for model_name, model in self.models.items():
                 # grab dict of [step, pcas]
                 step_pcas = model.pca_logits(x, components=max(component_buckets))
-                
-                # clean so we just have component variance buckets for each step of the model
-                # also convert steps to ints now
+
+                # clean so we have a map of step: component-variance buckets
+                # for each model also convert steps to ints now
                 step_variance_buckets = {
                     k: {} for k in component_buckets
                 }
                 for (step, bucket) in product(step_pcas, component_buckets):
-                    step_variance_buckets[bucket][int(step)] = sum(step_pcas[step][:bucket])
-                
+                    # print(step_pcas[step])
+                    step_variance_buckets[bucket][int(step)] = t.sum(step_pcas[step][:bucket]).item()
+
+                # go through each component-variance bucket, append model name,
+                # and add to larger dataframes
                 for bucket in component_buckets:
                     step_variance_buckets[bucket]["model"] = model_name
                     pca_data[bucket] = pd.concat([pca_data[bucket], pd.DataFrame(step_variance_buckets[bucket], index=[0])])
-            
+
+            # reorder columns
             for k in pca_data:
                 ordered_cols = sorted(pca_data[k].columns, key=lambda x: -1 if isinstance(x, str) else x)
                 pca_data[k] = pd.DataFrame(pca_data[k][ordered_cols])
+        
+        # load to cpu when done
+        self.models = self.models.to('cpu')
                 
         return pca_data
-
-warp = ConvWarp('../warp_0')
-
-rando = t.rand((32, 3, 32, 32), requires_grad=False)
-for bucket, df in warp.pca_over_time(rando).items():
-    print(df.head())
