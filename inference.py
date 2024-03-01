@@ -3,13 +3,26 @@ Modularized inference code. Runs a given data point across all models and calcul
 """
 import os
 import torch
+import random
+import string
 import pandas as pd
 import numpy as np
-from train import Ensemble
-from argparse import ArgumentParser
+
+from tools import Ensemble, CIFAR10_Dataset, ConcatDataset
+from argparse import ArgumentParser, Namespace
+
+
+from typing import Any, Callable, Dict, List, TypeAlias, Tuple
+from torch import Tensor
+from pandas import DataFrame
+from numpy import ndarray
 
 from torch.utils.data import Dataset, DataLoader
 from pytorch_lightning import Trainer   
+from inference_stats import PIPELINE
+import torchvision.transforms as T
+from torchvision.datasets import CIFAR10
+
 
 DEFAULT_MODELS_PATH = '/mnt/ssd-1/variance-across-time/cifar-ckpts'
 DEFAULT_DATASET_PATH = '/mnt/ssd-1/sai/variance-across-time/own/'
@@ -19,8 +32,13 @@ DEFAULT_DATASET_CORRUPTIONS = [
     'snow', 'defocus_blur', 'gaussian_noise', 'motion_blur', 'spatter', 'elastic_transform', 
     'glass_blur', 'pixelate', 'speckle_noise', 'fog', 'impulse_noise', 'saturate', 'zoom_blur'
 ]
+DEFAULT_DATASET_TYPES = [
+    'out_of_distribution', 'train', 'test'
+]
 
-def get_model_paths(args):
+def get_model_paths(args: Namespace) -> List[str]:
+    """Gets all paths to pytorch checkpoint files
+    """
     all_model_paths = []
     for warp in range(args.warps):
         # TODO: warp 3 does not seem to exist
@@ -32,55 +50,109 @@ def get_model_paths(args):
     
     return all_model_paths
 
-class CIFAR10_Dataset(Dataset):
-    def __init__(self, data, labels):
-        self.labels = torch.tensor(labels, dtype=torch.int64)
-        self.data = torch.tensor(data)
-        
+def get_datasets(args) -> DataFrame:
+    """Yields appropriate dataset based on dataset distributions
 
-    def __getitem__(self, idx):
-        # put channels first, as input
-        return (self.data[idx].permute(-1, 0, 1)/255, self.labels[idx])
+    Args:
+        args (Namespace): Input arguments
+    
+    Yields:
+        (DataFrame) dataset from the given dataset distribution
+    """
+    if isinstance(args.dataset_distribution, list):
+        for dist in args.dataset_distribution:
+            args.dataset_distribution = dist
+            yield from get_datasets(args)
+    
+    if args.dataset_distribution == 'out_of_distribution':
+        for corruption in args.dataset_corruptions:
+            data = np.load(os.path.join(args.dataset_path, f'{corruption}_srs1000.npy'))
+            labels = np.load(os.path.join(args.dataset_path, 'labels_srs1000.npy'))
+            yield CIFAR10_Dataset(data, labels, corruption)
 
-    def __len__(self):
-        return len(self.labels)
+    elif args.dataset_distribution == 'train':
+        trf = T.Compose([
+            T.RandomHorizontalFlip(),
+            T.RandomCrop(32, padding=4),
+            T.RandAugment(),
+            T.ToTensor(),
+        ])
+        train = CIFAR10(
+            root='./cifar-train', train=True, download=True, transform=trf,
+        )
+        train.corruption = 'train'
+        yield train
+
+    elif args.dataset_distribution == 'test':
+        test = CIFAR10(
+            root='./cifar-test', train=False, download=True, transform=T.ToTensor(),
+        )
+        test.corruption = 'none'
+        yield test
+    else:
+        raise NotImplementedError(f"{args.dataset_distribution} is not implemented.")
+    
 
 
-
-def get_jenson_shannon_divergances(args, dataset_corruption):
+def get_logits(args, dataset) -> Tensor:
     """Calculates log probabilities of samples of dataset across all models in all warps
 
     Args:
-        args (argparse.Namespace): Passed input arguments
+        args (Namespace): Passed input arguments
 
     Returns:
-        (torch.Tensor of shape (dataset_size, num_models, num_classes))
+        log probabilities: (torch.Tensor of shape (dataset_size, num_models, num_classes))
     """
+    dataloader = DataLoader(dataset, batch_size=args.dataset_batch_size, num_workers=4)
+
     model_paths = get_model_paths(args)
     all_log_probs = []
-    data = np.load(os.path.join(args.dataset_path, f'{dataset_corruption}_srs10000.npy'))
-    labels = np.load(os.path.join(args.dataset_path, 'labels_srs10000.npy'))
-    dataloader = DataLoader(CIFAR10_Dataset(data, labels), batch_size=args.dataset_batch_size, num_workers=4)
+
     lig_trainer = Trainer(
         accelerator = 'gpu',
         devices = [args.gpu_id],
         precision = '16-mixed'
     )
+
     for i in range(0, len(model_paths), args.models_per_gpu):
         print(f"Iterating over models {i}...{min(i+args.models_per_gpu, len(model_paths))}")
         curr_model_paths = model_paths[i:i+args.models_per_gpu]
+        
+        # Initializing with a random model seed, seed does not matter as we load them anyways
         models = Ensemble(100, len(curr_model_paths), "")
         models.from_pretrained(curr_model_paths)
+
         log_probs = torch.cat(lig_trainer.predict(models, dataloader))
         all_log_probs.append(log_probs)
     
     all_log_probs = torch.cat(all_log_probs, dim = -2)
-    all_jsds = models.jenson_shannon_divergance(all_log_probs)
+    return all_log_probs
 
+def run_pipeline_and_save(args):
+    """Runs all inference metrics on datasets and saves the results
+
+    Args:
+        args (Namespace): Input arguments
+    """
+    all_results = []
+    all_data = {
+        'datasets': [],
+        'labels': [],
+        'corruption': []
+    }
+    for dataset in get_datasets(args):
+        all_data['datasets'].append(dataset)
+        all_data['labels'].extend(dataset.targets)
+        all_data['corruption'].extend([dataset.corruption for _ in range(len(dataset))])
     
-    return all_jsds.numpy(), labels
-
-
+    concat_dataset = ConcatDataset(all_data['datasets'])
+    logits = get_logits(args, concat_dataset)
+    all_data['logits'] = logits
+    
+    results = DataFrame.from_dict(all_data)     
+    os.makedirs(args.save_path, exist_ok=True)
+    save_path = os.path.join(args.save_path, f'{args.run_id}_inference_metrics.parquet')
+    all_results.to_parquet(save_path)
 
 
 if __name__ == '__main__':
@@ -101,15 +173,14 @@ if __name__ == '__main__':
         default=DEFAULT_DATASET_CORRUPTIONS
     )
     parser.add_argument('--save_path', type=str, default=DEFAULT_RES_SAVE_PATH)
+    parser.add_argument(
+        '--dataset-distribution', type=str, 
+        choices=DEFAULT_DATASET_TYPES, 
+        default=DEFAULT_DATASET_TYPES
+    )
+    default_random_id = random.choices(string.ascii_lowercase)
+    random.shuffle(default_random_id)
+    parser.add_argument('--run-id',type=str,default=''.join(default_random_id))
     args = parser.parse_args()
-    result = pd.DataFrame()
-    for corruption in args.dataset_corruptions:
-        all_jsds, labels = get_jenson_shannon_divergances(args, corruption)
-        result[f'{corruption}_jenson_shannon_divergances'] = all_jsds
-    
-    result['labels'] = labels
-    result['ids'] = range(len(labels))        
-        
-    os.makedirs(args.save_path, exist_ok=True)
-    result.to_parquet(os.path.join(args.save_path, f'jsds.parquet'))
+    run_pipeline_and_save(args)
     
