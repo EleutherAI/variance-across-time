@@ -25,9 +25,9 @@ from torchvision.datasets import CIFAR10
 
 
 DEFAULT_MODELS_PATH = '/mnt/ssd-1/variance-across-time/cifar-ckpts'
-DEFAULT_DATASET_PATH = '/mnt/ssd-1/sai/variance-across-time/own/'
+DEFAULT_OOD_DATASET_PATH = '/mnt/ssd-1/sai/variance-across-time/own/'
 DEFAULT_RES_SAVE_PATH = '/mnt/ssd-1/sai/variance-across-time/datasets/'
-DEFAULT_DATASET_CORRUPTIONS = [
+DEFAULT_OOD_DATASET_CORRUPTIONS = [
     'brightness', 'frost', 'jpeg_compression', 'shot_noise', 'contrast', 'gaussian_blur', 
     'snow', 'defocus_blur', 'gaussian_noise', 'motion_blur', 'spatter', 'elastic_transform', 
     'glass_blur', 'pixelate', 'speckle_noise', 'fog', 'impulse_noise', 'saturate', 'zoom_blur'
@@ -65,9 +65,9 @@ def get_datasets(args) -> DataFrame:
             yield from get_datasets(args)
     
     if args.dataset_distribution == 'out_of_distribution':
-        for corruption in args.dataset_corruptions:
-            data = np.load(os.path.join(args.dataset_path, f'{corruption}_srs1000.npy'))
-            labels = np.load(os.path.join(args.dataset_path, 'labels_srs1000.npy'))
+        for corruption in args.ood_dataset_corruptions:
+            data = np.load(os.path.join(args.ood_dataset_path, f'{corruption}_srs1000.npy'))
+            labels = np.load(os.path.join(args.ood_dataset_path, 'labels_srs1000.npy'))
             yield CIFAR10_Dataset(data, labels, corruption)
 
     elif args.dataset_distribution == 'train':
@@ -146,13 +146,14 @@ def run_pipeline_and_save(args):
         all_data['corruption'].extend([dataset.corruption for _ in range(len(dataset))])
     
     concat_dataset = ConcatDataset(all_data['datasets'])
+    all_data.pop('datasets')
+
+    results = DataFrame.from_dict(all_data)
     logits = get_logits(args, concat_dataset)
-    all_data['logits'] = logits
-    
-    results = DataFrame.from_dict(all_data)     
+    PIPELINE.transform(logits, results)   
     os.makedirs(args.save_path, exist_ok=True)
     save_path = os.path.join(args.save_path, f'{args.run_id}_inference_metrics.parquet')
-    all_results.to_parquet(save_path)
+    results.to_parquet(save_path)
 
 
 if __name__ == '__main__':
@@ -166,11 +167,11 @@ if __name__ == '__main__':
     parser.add_argument('--gpu-id', type=int, default=6)
     parser.add_argument('--models-per-gpu', type=int, default=512)
     parser.add_argument('--dataset-batch-size', type=int, default=64)
-    parser.add_argument('--dataset-path', type=str, default=DEFAULT_DATASET_PATH)
+    parser.add_argument('--ood-dataset-path', type=str, default=DEFAULT_OOD_DATASET_PATH)
     parser.add_argument(
-        '--dataset-corruptions', type=list, 
-        choices=DEFAULT_DATASET_CORRUPTIONS,
-        default=DEFAULT_DATASET_CORRUPTIONS
+        '--ood-dataset-corruptions', type=list, 
+        choices=DEFAULT_OOD_DATASET_CORRUPTIONS,
+        default=DEFAULT_OOD_DATASET_CORRUPTIONS
     )
     parser.add_argument('--save_path', type=str, default=DEFAULT_RES_SAVE_PATH)
     parser.add_argument(
@@ -178,7 +179,7 @@ if __name__ == '__main__':
         choices=DEFAULT_DATASET_TYPES, 
         default=DEFAULT_DATASET_TYPES
     )
-    default_random_id = random.choices(string.ascii_lowercase)
+    default_random_id = random.choices(string.ascii_lowercase, k=10)
     random.shuffle(default_random_id)
     parser.add_argument('--run-id',type=str,default=''.join(default_random_id))
     args = parser.parse_args()
