@@ -5,28 +5,26 @@ import os
 import torch
 import random
 import string
-import pandas as pd
 import numpy as np
 
 from tools import Ensemble, CIFAR10_Dataset, ConcatDataset
 from argparse import ArgumentParser, Namespace
 
 
-from typing import Any, Callable, Dict, List, TypeAlias, Tuple
+from typing import List
 from torch import Tensor
 from pandas import DataFrame
-from numpy import ndarray
 
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 from pytorch_lightning import Trainer   
 from inference_stats import PIPELINE
 import torchvision.transforms as T
 from torchvision.datasets import CIFAR10
 
 
-DEFAULT_MODELS_PATH = '/mnt/ssd-1/variance-across-time/cifar-ckpts'
-DEFAULT_OOD_DATASET_PATH = '/mnt/ssd-1/sai/variance-across-time/own/'
-DEFAULT_RES_SAVE_PATH = '/mnt/ssd-1/sai/variance-across-time/datasets/'
+DEFAULT_MODELS_PATH = './cifar-ckpts'
+DEFAULT_OOD_DATASET_PATH = './own/'
+DEFAULT_RES_SAVE_PATH = './datasets/'
 DEFAULT_OOD_DATASET_CORRUPTIONS = [
     'brightness', 'frost', 'jpeg_compression', 'shot_noise', 'contrast', 'gaussian_blur', 
     'snow', 'defocus_blur', 'gaussian_noise', 'motion_blur', 'spatter', 'elastic_transform', 
@@ -41,12 +39,12 @@ def get_model_paths(args: Namespace) -> List[str]:
     """
     all_model_paths = []
     for warp in range(args.warps):
-        # TODO: warp 3 does not seem to exist
-        if warp == 3: continue
 
         for idx in range(args.models_per_warp):
             model_path = os.path.join(args.models_path,f'warp_{warp}', f'model_{idx}', f'step={args.step}.pt')
-            all_model_paths.append(model_path)
+            
+            if os.path.exists(model_path):
+                all_model_paths.append(model_path)
     
     return all_model_paths
 
@@ -134,7 +132,7 @@ def run_pipeline_and_save(args):
     Args:
         args (Namespace): Input arguments
     """
-    all_results = []
+    # all_results = []
     all_data = {
         'datasets': [],
         'labels': [],
@@ -150,7 +148,11 @@ def run_pipeline_and_save(args):
 
     results = DataFrame.from_dict(all_data)
     logits = get_logits(args, concat_dataset)
-    PIPELINE.transform(logits, results)   
+    
+    # run pipeline on logits
+    PIPELINE.transform(logits, results)
+    
+    # save results to parquet file
     os.makedirs(args.save_path, exist_ok=True)
     save_path = os.path.join(args.save_path, f'{args.run_id}_inference_metrics.parquet')
     results.to_parquet(save_path)
