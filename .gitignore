@@ -25,6 +25,13 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+own/
+
+# generated datasets
+datasets/
+
+# output files
+*.out
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
