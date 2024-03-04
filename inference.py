@@ -8,7 +8,7 @@ import string
 import pandas as pd
 import numpy as np
 
-from tools import Ensemble, CIFAR10_Dataset, ConcatDataset
+from tools import Ensemble, CIFAR10_Dataset 
 from argparse import ArgumentParser, Namespace
 
 
@@ -17,7 +17,7 @@ from torch import Tensor
 from pandas import DataFrame
 from numpy import ndarray
 
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import ConcatDataset, Dataset, DataLoader
 from pytorch_lightning import Trainer   
 from inference_stats import PIPELINE
 import torchvision.transforms as T
