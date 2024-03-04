@@ -132,7 +132,7 @@ class Ensemble(pl.LightningModule):
         return log_probs
 
     @staticmethod
-    def jenson_shannon_divergance(lps):
+    def jenson_shannon_divergence(lps):
         """Calculates Jenson Shannon Divergance (https://en.wikipedia.org/wiki/Jensen%E2%80%93Shannon_divergence)
         
         Args:
@@ -151,7 +151,7 @@ class Ensemble(pl.LightningModule):
 
         with torch.no_grad():
             lps = logits.log_softmax(dim=-1)
-            jsd = self.jenson_shannon_divergance(lps)
+            jsd = self.jenson_shannon_divergence(lps)
             self.log(f'{stage}_jsd', jsd, on_step=True)
 
         loss_fn = torch.vmap(torch.nn.functional.cross_entropy, (0, None), 0)
