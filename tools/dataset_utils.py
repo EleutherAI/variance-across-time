@@ -24,25 +24,3 @@ class CIFAR10_Dataset(Dataset):
     def __len__(self):
         return len(self.targets)
 
-
-class ConcatDataset(Dataset):
-    """Concatenates multiple datasets, one after the other
-
-    Args:
-        datasets (List[Dataset]): Input datasets
-    """
-    def __init__(self, datasets: List[Dataset]):
-        self.datasets = datasets
-    
-    def __len__(self):
-        tot_len = 0
-        for ds in self.datasets:
-            tot_len += len(ds)
-        return tot_len
-    
-    def __getitem__(self, idx):
-        ds_idx = 0
-        while(idx >= len(self.datasets[ds_idx])):
-            idx -= len(self.datasets[ds_idx])
-            ds_idx+=1
-        return self.datasets[ds_idx][idx]
