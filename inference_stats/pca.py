@@ -14,7 +14,7 @@ def class_covariance_eigvals(logits: Tensor, results: DataFrame) -> DataFrame:
     with t.no_grad():
         
         for c in range(10):
-            concated_logits = einops.rearrange(logits[:, :, c::10], "i m l -> m (i l)")
+            concated_logits = logits[:, :, c].T
             
             e_vals: t.Tensor = t.linalg.eigvalsh(covar(concated_logits))
             
