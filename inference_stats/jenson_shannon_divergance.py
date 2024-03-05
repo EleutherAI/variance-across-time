@@ -18,5 +18,5 @@ def jenson_shannon_divergance(lps):
 def calculate_jenson_shannon_divergance(logits: Tensor, results: DataFrame) -> DataFrame:
     """Calculates and stores jenson shannon divergances in a Dataframe
     """
-    results['jenson_shannon_divergance'] = jenson_shannon_divergance(logits).numpy()
+    results['jenson_shannon_divergance'] = jenson_shannon_divergance(logits).cpu().numpy()
     return results

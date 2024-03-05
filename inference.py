@@ -150,7 +150,7 @@ def run_pipeline_and_save(args):
     logits = get_logits(args, concat_dataset)
     
     # run pipeline on logits
-    PIPELINE.transform(logits, results)
+    PIPELINE.transform(logits, results, device=args.gpu_id)
     
     # save results to parquet file
     os.makedirs(args.save_path, exist_ok=True)

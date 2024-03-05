@@ -24,7 +24,7 @@ class InferencePipeline:
         
         return decorator
     
-    def transform(self, logits: Tensor, results: DataFrame):
+    def transform(self, logits: Tensor, results: DataFrame, device: str | None = None):
         """Saves all stats on logits on the resultant dataframe. 
         
         Saving format is determined by individual functions
@@ -33,6 +33,9 @@ class InferencePipeline:
             logits (torch.Tensor): Model logits of shape (batch_size, num_models, num_classes)
             results (DataFrame): Dataframe to save further statistics onto
         """
+        if device is not None:
+            logits = logits.to(device)
+        
         for stat_func in self.stat_funcs:
             stat_func(logits, results)
 

@@ -1,15 +1,30 @@
 from .base import PIPELINE
 from torch import Tensor
 from pandas import DataFrame, Series
+import einops
 import torch as t
+
+# TODO replace with t.cov, depending on memory consumption
+def covar(x: t.Tensor) -> t.Tensor:
+    centered = (x - x.mean(dim=0))
+    return (centered.T @ centered) / (x.shape[0] - 1)
+
+@PIPELINE.register_filter()
+def class_covariance_eigvals(logits: Tensor, results: DataFrame) -> DataFrame:
+    with t.no_grad():
+        
+        for c in range(10):
+            concated_logits = einops.rearrange(logits[:, :, c::10], "i m l -> m (i l)")
+            
+            e_vals: t.Tensor = t.linalg.eigvalsh(covar(concated_logits))
+            
+            results[f'eig_vals_{c}'] = Series(e_vals.cpu().numpy())
     
+    return results
 
 @PIPELINE.register_filter()
 def covariance_eigvals(logits: Tensor, results: DataFrame) -> DataFrame:
     """ Calculates the eigvals of the centered covariance matrix of logits.
-    
-    This is kind of scuffed since results is one image per row. But, the column eig_vals
-    contains the eig_vals of the covar matrix in ascending order.
 
     Args:
         logits (Tensor): _description_
@@ -18,15 +33,12 @@ def covariance_eigvals(logits: Tensor, results: DataFrame) -> DataFrame:
     Returns:
         DataFrame: _description_
     """
+    
     with t.no_grad():
-        num_images, num_models, d_logits = logits.shape
-        
-        concated_logits = logits.reshape(num_images, num_models * d_logits)
-        
-        centered = concated_logits - concated_logits.mean(dim=0)
-        
-        e_vals = t.linalg.eigvalsh(t.matmul(centered.T, centered))
+        concated_logits = einops.rearrange(logits, "i m l -> m (i l)")
 
-        results['eig_vals'] = Series(e_vals)
+        e_vals: t.Tensor = t.linalg.eigvalsh(covar(concated_logits))
+
+        results['eig_vals'] = Series(e_vals.cpu().numpy())
     
     return results
