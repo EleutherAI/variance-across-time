@@ -149,18 +149,11 @@ def run_pipeline_and_save(args):
 
     results = DataFrame.from_dict(all_data)
     logits = get_logits(args, concat_dataset)
-    
-    try:
-        # run pipeline on logits
-        PIPELINE.transform(logits, results, device=args.gpu_id)
-    except torch.cuda.OutOfMemoryError:
-        if not args.safe_logits:
-            print("CUDA OutOfMemoryError")
-        else:
-            filename = os.path.join(args.save_path, f"{uuid.uuid4()}-logits.pt")
-            print("CUDA OutOfMemoryError: Saving logits to", filename)
-            torch.save(logits, filename)
-    
+
+    if args.safe_logits:
+        filename = os.path.join(args.save_path, f"{args.run_id}_logits.pt")
+        torch.save(logits, filename)
+
     # save results to parquet file
     os.makedirs(args.save_path, exist_ok=True)
     save_path = os.path.join(args.save_path, f'{args.run_id}_inference_metrics.parquet')
