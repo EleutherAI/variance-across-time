@@ -6,6 +6,7 @@ import torch
 import random
 import string
 import numpy as np
+import uuid
 
 from tools import Ensemble, CIFAR10_Dataset 
 from argparse import ArgumentParser, Namespace
@@ -149,8 +150,16 @@ def run_pipeline_and_save(args):
     results = DataFrame.from_dict(all_data)
     logits = get_logits(args, concat_dataset)
     
-    # run pipeline on logits
-    PIPELINE.transform(logits, results, device=args.gpu_id)
+    try:
+        # run pipeline on logits
+        PIPELINE.transform(logits, results, device=args.gpu_id)
+    except torch.cuda.OutOfMemoryError:
+        if not args.safe_logits:
+            print("CUDA OutOfMemoryError")
+        else:
+            filename = os.path.join(args.save_path, f"{uuid.uuid4()}-logits.pt")
+            print("CUDA OutOfMemoryError: Saving logits to", filename)
+            torch.save(logits, filename)
     
     # save results to parquet file
     os.makedirs(args.save_path, exist_ok=True)
@@ -162,6 +171,7 @@ if __name__ == '__main__':
     # Use Tensor Cores even for float32
     torch.set_float32_matmul_precision("high")
     parser = ArgumentParser()
+    parser.add_argument('--safe-logits', type=bool, default=False)
     parser.add_argument('--step', type=int, default=16384)
     parser.add_argument('--models-per-warp', type=int, default=32)
     parser.add_argument('--warps', type=int, default=128)
