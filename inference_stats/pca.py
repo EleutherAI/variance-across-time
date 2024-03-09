@@ -5,6 +5,7 @@ import torch as t
 import einops
 
 
+@t.no_grad()
 def svd_pca(x: t.Tensor) -> t.Tensor:
     x -= x.mean(0)
     s = t.linalg.svdvals(x)
@@ -13,20 +14,20 @@ def svd_pca(x: t.Tensor) -> t.Tensor:
 
 @PIPELINE.register_filter()
 @t.no_grad()
-def class_covariance_eigvals(logits: Tensor, results: DataFrame) -> DataFrame:
-    for c in range(10):
+def class_p_component_variance(logits: Tensor, results: DataFrame) -> DataFrame:
+    for c in range(logits.size(2)):
         sliced_logits = logits[:, :, c].T
 
-        e_vals: t.Tensor = svd_pca(sliced_logits)
+        variances: t.Tensor = svd_pca(sliced_logits)
 
-        results[f'eig_vals_{c}'] = Series(e_vals.cpu().numpy())
+        results[f'eig_vals_{c}'] = Series(variances.cpu().numpy())
 
     return results
 
 
 @PIPELINE.register_filter()
 @t.no_grad()
-def covariance_eigvals(logits: Tensor, results: DataFrame) -> DataFrame:
+def p_component_variance(logits: Tensor, results: DataFrame) -> DataFrame:
     """ Calculates the eigvals of the centered covariance matrix of logits.
 
     Args:
@@ -38,8 +39,8 @@ def covariance_eigvals(logits: Tensor, results: DataFrame) -> DataFrame:
     """
     model_stacked_logits = einops.rearrange(logits, "i m l -> m (i l)")
 
-    e_vals: t.Tensor = svd_pca(model_stacked_logits)
+    variances: t.Tensor = svd_pca(model_stacked_logits)
 
-    results['eig_vals'] = Series(e_vals.cpu().numpy())
+    results['eig_vals'] = Series(variances.cpu().numpy())
 
     return results

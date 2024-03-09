@@ -6,10 +6,9 @@ import torch
 import random
 import string
 import numpy as np
-import uuid
 
-from tools import Ensemble, CIFAR10_Dataset 
-from argparse import ArgumentParser, Namespace
+from tools import Ensemble, CIFAR10_Dataset
+from argparse import ArgumentParser, Namespace, BooleanOptionalAction
 
 
 from typing import List
@@ -17,7 +16,7 @@ from torch import Tensor
 from pandas import DataFrame
 
 from torch.utils.data import ConcatDataset, DataLoader
-from pytorch_lightning import Trainer   
+from pytorch_lightning import Trainer
 from inference_stats import PIPELINE
 import torchvision.transforms as T
 from torchvision.datasets import CIFAR10
@@ -150,9 +149,12 @@ def run_pipeline_and_save(args):
     results = DataFrame.from_dict(all_data)
     logits = get_logits(args, concat_dataset)
 
-    if args.safe_logits:
+    # if logit tensor is requested, save to .pt
+    if args.save_logits:
         filename = os.path.join(args.save_path, f"{args.run_id}_logits.pt")
         torch.save(logits, filename)
+    
+    PIPELINE.transform(logits, results)
 
     # save results to parquet file
     os.makedirs(args.save_path, exist_ok=True)
@@ -164,7 +166,7 @@ if __name__ == '__main__':
     # Use Tensor Cores even for float32
     torch.set_float32_matmul_precision("high")
     parser = ArgumentParser()
-    parser.add_argument('--safe-logits', type=bool, default=False)
+    parser.add_argument('--save-logits', action=BooleanOptionalAction)
     parser.add_argument('--step', type=int, default=16384)
     parser.add_argument('--models-per-warp', type=int, default=32)
     parser.add_argument('--warps', type=int, default=128)
@@ -186,7 +188,7 @@ if __name__ == '__main__':
     )
     default_random_id = random.choices(string.ascii_lowercase, k=10)
     random.shuffle(default_random_id)
-    parser.add_argument('--run-id',type=str,default=''.join(default_random_id))
+    parser.add_argument('--run-id', type=str, default=''.join(default_random_id))
     args = parser.parse_args()
     run_pipeline_and_save(args)
     

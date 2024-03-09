@@ -2,6 +2,8 @@ from typing import Any, Callable, Dict, List, TypeAlias
 InferFunc: TypeAlias = Callable[..., Any]
 from pandas import DataFrame
 from torch import Tensor
+import traceback
+
 
 class InferencePipeline:
     def __init__(self):
@@ -37,6 +39,12 @@ class InferencePipeline:
             logits = logits.to(device)
         
         for stat_func in self.stat_funcs:
-            stat_func(logits, results)
+            # don't let the failure of one pipeline kill the whole process
+            try:
+                stat_func(logits, results)
+            except Exception:
+                print(f"Pipeline func {stat_func.__name__} caused an error")
+                print(traceback.format_exc())
 
-PIPELINE = InferencePipeline() 
+
+PIPELINE = InferencePipeline()

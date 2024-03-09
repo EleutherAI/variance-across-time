@@ -4,6 +4,7 @@ from pandas import DataFrame
 import numpy as np
 import torch
 
+
 def jenson_shannon_divergence(lps):
     """Calculates Jenson Shannon Divergance (https://en.wikipedia.org/wiki/Jensen%E2%80%93Shannon_divergence)
     
@@ -13,6 +14,7 @@ def jenson_shannon_divergence(lps):
     n = np.log(lps.shape[-2])
     mixture_lps = lps.logsumexp(dim=-2, keepdim=True).sub(n)
     return torch.sum(lps.exp() * (lps - mixture_lps), dim=-1).mean(dim=-1)
+
 
 @PIPELINE.register_filter()
 def calculate_jenson_shannon_divergence(logits: Tensor, results: DataFrame) -> DataFrame:
