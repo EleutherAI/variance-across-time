@@ -7,7 +7,7 @@ import random
 import string
 import numpy as np
 
-from tools import Ensemble, CIFAR10_Dataset, CIFAR5m_Dataset
+from tools import Ensemble, CIFAR10_Dataset
 from argparse import ArgumentParser, Namespace, BooleanOptionalAction
 
 
@@ -69,9 +69,9 @@ def get_datasets(args) -> DataFrame:
             yield CIFAR10_Dataset(data, labels, corruption)
     
     elif args.dataset_distribution == 'cifar5m':
-        data = torch.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_images.pt'))
-        labels = torch.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_labels.pt'))
-        yield CIFAR5m_Dataset(data, labels)
+        data = torch.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_images.npy'))
+        labels = torch.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_labels.npy'))
+        yield CIFAR10_Dataset(data, labels, "cifar5m")
 
     elif args.dataset_distribution == 'train':
         trf = T.Compose([

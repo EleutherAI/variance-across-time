@@ -63,5 +63,5 @@ if __name__ == "__main__":
     console.print(table)
 
     # mask and save
-    t.save(labels_subet, "./cifar5m_sample_labels.pt")
-    t.save(images_subset, "./cifar5m_sample_images.pt")
+    np.save("cifar5m_sample_labels", labels_subet)
+    np.save("cifar5m_sample_images", images_subset)
