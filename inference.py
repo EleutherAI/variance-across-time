@@ -7,7 +7,7 @@ import random
 import string
 import numpy as np
 
-from tools import Ensemble, CIFAR10_Dataset
+from tools import Ensemble, CIFAR10_Dataset, CIFAR5m_Dataset
 from argparse import ArgumentParser, Namespace, BooleanOptionalAction
 
 
@@ -31,7 +31,7 @@ DEFAULT_OOD_DATASET_CORRUPTIONS = [
     'glass_blur', 'pixelate', 'speckle_noise', 'fog', 'impulse_noise', 'saturate', 'zoom_blur'
 ]
 DEFAULT_DATASET_TYPES = [
-    'out_of_distribution', 'train', 'test'
+    'out_of_distribution', 'train', 'test', 'cifar5m'
 ]
 
 def get_model_paths(args: Namespace) -> List[str]:
@@ -67,6 +67,11 @@ def get_datasets(args) -> DataFrame:
             data = np.load(os.path.join(args.ood_dataset_path, f'{corruption}_srs1000.npy'))
             labels = np.load(os.path.join(args.ood_dataset_path, 'labels_srs1000.npy'))
             yield CIFAR10_Dataset(data, labels, corruption)
+    
+    elif args.dataset_distribution == 'cifar5m':
+        data = torch.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_images.pt'))
+        labels = torch.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_labels.pt'))
+        yield CIFAR5m_Dataset(data, labels)
 
     elif args.dataset_distribution == 'train':
         trf = T.Compose([
@@ -80,6 +85,7 @@ def get_datasets(args) -> DataFrame:
         )
         train.corruption = 'train'
         yield train
+        
 
     elif args.dataset_distribution == 'test':
         test = CIFAR10(

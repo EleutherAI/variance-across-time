@@ -3,6 +3,26 @@ from numpy import ndarray
 from torch.utils.data import Dataset
 from typing import List
 
+
+class CIFAR5m_Dataset(Dataset):
+    """CIFAR-5m dataset class
+
+    Args:
+        data (ndarray): numpy array of shape (num_images, 32, 32, 3)
+        labels (ndarray): Array of shape (data_size), target labels
+    """
+    def __init__(self, data: torch.Tensor, labels: torch.Tensor):
+        self.targets = labels
+        self.data = torch.tensor(data)
+        
+    def __getitem__(self, idx):
+        # put channels first, as input
+        return (self.data[idx].permute(-1, 0, 1)/255, self.targets[idx])
+
+    def __len__(self):
+        return len(self.targets)
+
+
 class CIFAR10_Dataset(Dataset):
     """CIFAR 10 class for Out of distribution dataset
 
@@ -16,7 +36,6 @@ class CIFAR10_Dataset(Dataset):
         self.data = torch.tensor(data)
         self.corruption = corruption
         
-
     def __getitem__(self, idx):
         # put channels first, as input
         return (self.data[idx].permute(-1, 0, 1)/255, self.targets[idx])
