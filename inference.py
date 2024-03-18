@@ -69,8 +69,8 @@ def get_datasets(args) -> DataFrame:
             yield CIFAR10_Dataset(data, labels, corruption)
     
     elif args.dataset_distribution == 'cifar5m':
-        data = torch.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_images.npy'))
-        labels = torch.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_labels.npy'))
+        data = np.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_images.npy'))
+        labels = np.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_labels.npy'))
         yield CIFAR10_Dataset(data, labels, "cifar5m")
 
     elif args.dataset_distribution == 'train':
