@@ -1,7 +1,7 @@
 import torch
 from numpy import ndarray
 from torch.utils.data import Dataset
-from typing import List
+
 
 class CIFAR10_Dataset(Dataset):
     """CIFAR 10 class for Out of distribution dataset
@@ -16,7 +16,6 @@ class CIFAR10_Dataset(Dataset):
         self.data = torch.tensor(data)
         self.corruption = corruption
         
-
     def __getitem__(self, idx):
         # put channels first, as input
         return (self.data[idx].permute(-1, 0, 1)/255, self.targets[idx])

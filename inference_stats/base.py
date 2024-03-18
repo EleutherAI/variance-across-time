@@ -2,6 +2,8 @@ from typing import Any, Callable, Dict, List, TypeAlias
 InferFunc: TypeAlias = Callable[..., Any]
 from pandas import DataFrame
 from torch import Tensor
+import traceback
+
 
 class InferencePipeline:
     def __init__(self):
@@ -24,7 +26,7 @@ class InferencePipeline:
         
         return decorator
     
-    def transform(self, logits: Tensor, results: DataFrame):
+    def transform(self, logits: Tensor, results: DataFrame, device: str | None = None):
         """Saves all stats on logits on the resultant dataframe. 
         
         Saving format is determined by individual functions
@@ -33,7 +35,16 @@ class InferencePipeline:
             logits (torch.Tensor): Model logits of shape (batch_size, num_models, num_classes)
             results (DataFrame): Dataframe to save further statistics onto
         """
+        if device is not None:
+            logits = logits.to(device)
+        
         for stat_func in self.stat_funcs:
-            stat_func(logits, results)
+            # don't let the failure of one pipeline kill the whole process
+            try:
+                stat_func(logits, results)
+            except Exception:
+                print(f"Pipeline func {stat_func.__name__} caused an error")
+                print(traceback.format_exc())
 
-PIPELINE = InferencePipeline() 
+
+PIPELINE = InferencePipeline()

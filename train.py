@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 from tools.ensemble_modelling import Ensemble
 from torch.utils.data import random_split
 from torchvision.datasets import CIFAR10
+import torch
 
 import pytorch_lightning as pl
 import torchvision.transforms as T

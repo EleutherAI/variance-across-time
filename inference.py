@@ -5,35 +5,33 @@ import os
 import torch
 import random
 import string
-import pandas as pd
 import numpy as np
 
-from tools import Ensemble, CIFAR10_Dataset 
-from argparse import ArgumentParser, Namespace
+from tools import Ensemble, CIFAR10_Dataset
+from argparse import ArgumentParser, Namespace, BooleanOptionalAction
 
 
-from typing import Any, Callable, Dict, List, TypeAlias, Tuple
+from typing import List
 from torch import Tensor
 from pandas import DataFrame
-from numpy import ndarray
 
-from torch.utils.data import ConcatDataset, Dataset, DataLoader
-from pytorch_lightning import Trainer   
+from torch.utils.data import ConcatDataset, DataLoader
+from pytorch_lightning import Trainer
 from inference_stats import PIPELINE
 import torchvision.transforms as T
 from torchvision.datasets import CIFAR10
 
 
-DEFAULT_MODELS_PATH = '/mnt/ssd-1/variance-across-time/cifar-ckpts'
-DEFAULT_OOD_DATASET_PATH = '/mnt/ssd-1/sai/variance-across-time/own/'
-DEFAULT_RES_SAVE_PATH = '/mnt/ssd-1/sai/variance-across-time/datasets/'
+DEFAULT_MODELS_PATH = './cifar-ckpts'
+DEFAULT_OOD_DATASET_PATH = './own/'
+DEFAULT_RES_SAVE_PATH = './datasets/'
 DEFAULT_OOD_DATASET_CORRUPTIONS = [
     'brightness', 'frost', 'jpeg_compression', 'shot_noise', 'contrast', 'gaussian_blur', 
     'snow', 'defocus_blur', 'gaussian_noise', 'motion_blur', 'spatter', 'elastic_transform', 
     'glass_blur', 'pixelate', 'speckle_noise', 'fog', 'impulse_noise', 'saturate', 'zoom_blur'
 ]
 DEFAULT_DATASET_TYPES = [
-    'out_of_distribution', 'train', 'test'
+    'out_of_distribution', 'train', 'test', 'cifar5m'
 ]
 
 def get_model_paths(args: Namespace) -> List[str]:
@@ -41,12 +39,12 @@ def get_model_paths(args: Namespace) -> List[str]:
     """
     all_model_paths = []
     for warp in range(args.warps):
-        # TODO: warp 3 does not seem to exist
-        if warp == 3: continue
 
         for idx in range(args.models_per_warp):
             model_path = os.path.join(args.models_path,f'warp_{warp}', f'model_{idx}', f'step={args.step}.pt')
-            all_model_paths.append(model_path)
+            
+            if os.path.exists(model_path):
+                all_model_paths.append(model_path)
     
     return all_model_paths
 
@@ -69,6 +67,11 @@ def get_datasets(args) -> DataFrame:
             data = np.load(os.path.join(args.ood_dataset_path, f'{corruption}_srs1000.npy'))
             labels = np.load(os.path.join(args.ood_dataset_path, 'labels_srs1000.npy'))
             yield CIFAR10_Dataset(data, labels, corruption)
+    
+    elif args.dataset_distribution == 'cifar5m':
+        data = np.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_images.npy'))
+        labels = np.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_labels.npy'))
+        yield CIFAR10_Dataset(data, labels, "cifar5m")
 
     elif args.dataset_distribution == 'train':
         trf = T.Compose([
@@ -82,6 +85,7 @@ def get_datasets(args) -> DataFrame:
         )
         train.corruption = 'train'
         yield train
+        
 
     elif args.dataset_distribution == 'test':
         test = CIFAR10(
@@ -134,7 +138,7 @@ def run_pipeline_and_save(args):
     Args:
         args (Namespace): Input arguments
     """
-    all_results = []
+    # all_results = []
     all_data = {
         'datasets': [],
         'labels': [],
@@ -150,7 +154,15 @@ def run_pipeline_and_save(args):
 
     results = DataFrame.from_dict(all_data)
     logits = get_logits(args, concat_dataset)
-    PIPELINE.transform(logits, results)   
+
+    # if logit tensor is requested, save to .pt
+    if args.save_logits:
+        filename = os.path.join(args.save_path, f"{args.run_id}_logits.pt")
+        torch.save(logits, filename)
+
+    PIPELINE.transform(logits, results, device=args.gpu_id)
+
+    # save results to parquet file
     os.makedirs(args.save_path, exist_ok=True)
     save_path = os.path.join(args.save_path, f'{args.run_id}_inference_metrics.parquet')
     results.to_parquet(save_path)
@@ -160,6 +172,7 @@ if __name__ == '__main__':
     # Use Tensor Cores even for float32
     torch.set_float32_matmul_precision("high")
     parser = ArgumentParser()
+    parser.add_argument('--save-logits', action=BooleanOptionalAction)
     parser.add_argument('--step', type=int, default=16384)
     parser.add_argument('--models-per-warp', type=int, default=32)
     parser.add_argument('--warps', type=int, default=128)
@@ -181,7 +194,7 @@ if __name__ == '__main__':
     )
     default_random_id = random.choices(string.ascii_lowercase, k=10)
     random.shuffle(default_random_id)
-    parser.add_argument('--run-id',type=str,default=''.join(default_random_id))
+    parser.add_argument('--run-id', type=str, default=''.join(default_random_id))
     args = parser.parse_args()
     run_pipeline_and_save(args)
     
