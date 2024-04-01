@@ -14,6 +14,7 @@ import os
 from itertools import product
 from matplotlib.colors import LinearSegmentedColormap
 
+
 def produce_graphs(data: dict[str, pd.DataFrame]):
     """Generates Figure with variance changes across training
 

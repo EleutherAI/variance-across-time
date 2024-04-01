@@ -34,6 +34,7 @@ DEFAULT_DATASET_TYPES = [
     'out_of_distribution', 'train', 'test', 'cifar5m'
 ]
 
+
 def get_model_paths(args: Namespace) -> List[str]:
     """Gets all paths to pytorch checkpoint files
     """
@@ -47,6 +48,7 @@ def get_model_paths(args: Namespace) -> List[str]:
                 all_model_paths.append(model_path)
     
     return all_model_paths
+
 
 def get_datasets(args) -> DataFrame:
     """Yields appropriate dataset based on dataset distributions
@@ -95,7 +97,6 @@ def get_datasets(args) -> DataFrame:
         yield test
     else:
         raise NotImplementedError(f"{args.dataset_distribution} is not implemented.")
-    
 
 
 def get_logits(args, dataset) -> Tensor:
@@ -123,7 +124,9 @@ def get_logits(args, dataset) -> Tensor:
         curr_model_paths = model_paths[i:i+args.models_per_gpu]
         
         # Initializing with a random model seed, seed does not matter as we load them anyways
-        models = Ensemble(100, len(curr_model_paths), "")
+        models = Ensemble(100, len(curr_model_paths),
+                          model_hidden_sizes=args.models_hidden_sizes)
+
         models.from_pretrained(curr_model_paths)
 
         log_probs = torch.cat(lig_trainer.predict(models, dataloader))
@@ -131,6 +134,7 @@ def get_logits(args, dataset) -> Tensor:
     
     all_log_probs = torch.cat(all_log_probs, dim = -2)
     return all_log_probs
+
 
 def run_pipeline_and_save(args):
     """Runs all inference metrics on datasets and saves the results
@@ -148,7 +152,7 @@ def run_pipeline_and_save(args):
         all_data['datasets'].append(dataset)
         all_data['labels'].extend(dataset.targets)
         all_data['corruption'].extend([dataset.corruption for _ in range(len(dataset))])
-    
+
     concat_dataset = ConcatDataset(all_data['datasets'])
     all_data.pop('datasets')
 
@@ -172,12 +176,12 @@ if __name__ == '__main__':
     # Use Tensor Cores even for float32
     torch.set_float32_matmul_precision("high")
     parser = ArgumentParser()
-    parser.add_argument('--save-logits', action=BooleanOptionalAction)
-    parser.add_argument('--step', type=int, default=16384)
-    parser.add_argument('--models-per-warp', type=int, default=32)
-    parser.add_argument('--warps', type=int, default=128)
-    parser.add_argument('--models-path', type=str, default=DEFAULT_MODELS_PATH)
-    parser.add_argument('--gpu-id', type=int, default=6)
+    parser.add_argument('--save-logits', '-l', action=BooleanOptionalAction)
+    parser.add_argument('--step', '-s', type=int, default=16384)
+    parser.add_argument('--models-per-warp', '-m', type=int, default=32)
+    parser.add_argument('--warps', '-w', type=int, default=128)
+    parser.add_argument('--models-path', '-p', type=str, default=DEFAULT_MODELS_PATH)
+    parser.add_argument('--gpu-id', '-g', type=int, default=6)
     parser.add_argument('--models-per-gpu', type=int, default=512)
     parser.add_argument('--dataset-batch-size', type=int, default=64)
     parser.add_argument('--ood-dataset-path', type=str, default=DEFAULT_OOD_DATASET_PATH)
@@ -195,6 +199,11 @@ if __name__ == '__main__':
     default_random_id = random.choices(string.ascii_lowercase, k=10)
     random.shuffle(default_random_id)
     parser.add_argument('--run-id', type=str, default=''.join(default_random_id))
+    
+    # for handling different model configs
+    parser.add_argument('--models-hidden-sizes',
+                        '-z', nargs=4, default=[48, 96, 192, 384], type=int)
+    
     args = parser.parse_args()
     run_pipeline_and_save(args)
     

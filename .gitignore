@@ -173,5 +173,6 @@ checkpoints/
 data/
 lightning_logs/
 wandb/
+width_testing_models/
 
 *.pt

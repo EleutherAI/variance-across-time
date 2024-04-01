@@ -4,7 +4,6 @@ Ensemble model, vmaps across multiple, ConvNext models for more speedup
 
 import torch
 import math
-import os
 import tempfile
 
 from contextlib import nullcontext
@@ -14,7 +13,6 @@ from pathlib import Path
 import numpy as np
 
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import WandbLogger
 from torch import nn, optim
 from torch.func import functional_call, stack_module_state
 from torch.optim.optimizer import Optimizer
