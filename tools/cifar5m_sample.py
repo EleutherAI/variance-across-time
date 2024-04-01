@@ -39,7 +39,6 @@ if __name__ == "__main__":
     print("Labels shape:", labels.shape)
 
     images = np.load(args.images)
-    # images = einops.rearrange(labels, "(m h w c) -> m h w c", h=32, w=32, c=3)
     print("Images shape:", images.shape)
 
     num = args.num
