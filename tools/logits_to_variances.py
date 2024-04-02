@@ -7,14 +7,14 @@ from argparse import ArgumentParser
 import torch as t
 import einops
 from pandas import DataFrame, Series
-from .pca import svd_pca
+from pca import svd_pca
 
 
 if __name__ == '__main__':
     parser = ArgumentParser()
-    parser.add_argument('--gpu-id', type=int, default=6)
-    parser.add_argument('--out', type=str)
-    parser.add_argument('--logits', type=str)
+    parser.add_argument('--gpu-id', '-g', type=int, default=6)
+    parser.add_argument('--out', type=str, required=True)
+    parser.add_argument('--logits', '-l', type=str, required=True)
     args = parser.parse_args()
     
     metrics = DataFrame()

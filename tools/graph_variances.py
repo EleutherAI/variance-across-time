@@ -4,18 +4,20 @@ Script for generating graphs based on variance data.
 TODO: fix legends
 TODO: add option for specifying class/label versus all
 """
+from argparse import ArgumentParser
+import os
+from itertools import product
+from pathlib import Path
+
 import plotly.graph_objs as go
 import plotly as px
 from plotly.subplots import make_subplots
 import numpy as np
-from argparse import ArgumentParser
 import pandas as pd
-import os
-from itertools import product
 from matplotlib.colors import LinearSegmentedColormap
 
 
-def produce_graphs(data: dict[str, pd.DataFrame]):
+def produce_graphs(data: dict[str, pd.DataFrame], figure_title: str) -> go.Figure:
     """Generates Figure with variance changes across training
 
     Args:
@@ -29,8 +31,13 @@ def produce_graphs(data: dict[str, pd.DataFrame]):
     # Create a subplot grid
     rows = len(data) // 4
     cols = 4
-    fig = make_subplots(rows=rows, cols=cols, subplot_titles=list(data.keys()))
-    
+    fig = make_subplots(
+        rows=rows, 
+        cols=cols, 
+        subplot_titles=list(data.keys()),
+        shared_xaxes=True,
+        shared_yaxes=True
+    )
 
     for i, title in enumerate(data):
         df = data[title]
@@ -48,7 +55,9 @@ def produce_graphs(data: dict[str, pd.DataFrame]):
                     y=df[column],
                     mode='lines',
                     line=dict(color=color),
-                    showlegend=True, name=column
+                    showlegend=(i == 0), 
+                    name=column,
+                    legendgroup=column
                 ), row=row, col=col)
     fig.update_xaxes(type='log')
     fig.update_yaxes(type='log')
@@ -57,20 +66,20 @@ def produce_graphs(data: dict[str, pd.DataFrame]):
     fig.update_layout(
         height=1000,
         width=1900,
-        title='Multiple Line Graphs with Rainbow Colors',
+        title=figure_title,
         xaxis_title='Index',
         yaxis_title='Value',
         overwrite=True
     )
 
-    # Display the plot
-    fig.show()
+    return fig
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument('--variance-path', '-p', type=str)
     parser.add_argument('--variance-titles', '-t', nargs='+')
-    parser.add_argument('--out', '-o', type=str, default='./variance_progression')
+    parser.add_argument('--out', '-o', type=str, default='./variance_progression.png')
+    parser.add_argument('--title', type=str, default="Logit Variances")
     
     args = parser.parse_args()
     
@@ -105,4 +114,12 @@ if __name__ == "__main__":
         exit(0)
     
     # produce graphs
-    produce_graphs(variances)
+    figure = produce_graphs(variances, args.title)
+    
+    # save as png to out
+    path_str = f'{args.out}.png' if not args.out.endswith(".png") else args.out
+    
+    output = Path(path_str)
+    
+    figure.write_image(output)
+    
