@@ -24,6 +24,8 @@ from transformers import (
     get_cosine_schedule_with_warmup,
 )
 
+NUM_STEPS = 2 ** 16
+
 class Ensemble(pl.LightningModule):
     def __init__(
         self, seed: int, num_models: int, rsync_dest: str | None = None
@@ -152,7 +154,7 @@ class Ensemble(pl.LightningModule):
         with torch.no_grad():
             lps = logits.log_softmax(dim=-1)
             jsd = self.jenson_shannon_divergence(lps)
-            self.log(f'{stage}_jsd', jsd, on_step=True)
+            self.log(f'{stage}_jsd', jsd.mean(), on_step=True)
 
         loss_fn = torch.vmap(torch.nn.functional.cross_entropy, (0, None), 0)
         losses = loss_fn(logits, y)

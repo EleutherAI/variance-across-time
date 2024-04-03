@@ -7,6 +7,7 @@ from typing import Callable, Generator
 import os
 import math
 import tempfile
+import torch
 
 from PIL import Image
 from pytorch_lightning.loggers import WandbLogger
@@ -18,7 +19,6 @@ from torch.utils.data import Dataset, random_split
 from tools.ensemble_modelling import Ensemble
 from torchvision.datasets import CIFAR10
 
-import bitsandbytes as bnb
 import numpy as np
 import pytorch_lightning as pl
 import torchvision.transforms as T
@@ -96,12 +96,12 @@ if __name__ == '__main__':
     )
 
     trainer = pl.Trainer(
-        logger=WandbLogger(
-            name=args.name,
-            project="variance-across-time",
-            entity="eleutherai",
-            save_dir=f"warp_{args.seed}",
-        ),
+        #logger=WandbLogger(
+        #    name=args.name,
+        #    project="variance",
+        #    entity="eleutherai",
+        #    save_dir=f"warp_{args.seed}",
+        #),
         max_steps=NUM_STEPS,
         # Mixed precision with (b)float16 activations
         precision="bf16-mixed",
