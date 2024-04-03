@@ -55,7 +55,7 @@ if __name__ == '__main__':
 
     parser = ArgumentParser()
     parser.add_argument('name', type=str)
-    parser.add_argument('--cifar5m', action='store_true')
+    parser.add_argument('--cifar5m', type=str, default="")
     parser.add_argument('--num-models', type=int, default=64)
     parser.add_argument('--rsync-dest', type=str, default=None)
     parser.add_argument('--seed', type=int, default=0)
@@ -68,17 +68,16 @@ if __name__ == '__main__':
         T.ToTensor(),
     ])
     if args.cifar5m:
-        train = Cifar5m('/weka/norabelrose/cifar-5m', transform=trf, end=5_992_688)
-        nontrain = Cifar5m('/weka/norabelrose/cifar-5m', offset=5_992_688, transform=T.ToTensor())
+        train = Cifar5m(args.cifar5m, transform=trf, end=5_992_688)
+        nontrain = Cifar5m(args.cifar5m, offset=5_992_688, transform=T.ToTensor())
     else:
         train = CIFAR10(
-            root='/weka/norabelrose/variance-across-time/cifar-train', train=True, download=True, transform=trf,
+            root='./cifar-train', train=True, download=True, transform=trf,
         )
         nontrain = CIFAR10(
-            root='/weka/norabelrose/variance-across-time/cifar-test', train=False, download=True, transform=T.ToTensor(),
+            root='./cifar-test', train=False, download=True, transform=T.ToTensor(),
         )
     # Use the fixed seed 0 to do the val-test split
-    # torch.set_default_dtype(torch.bfloat16)
     torch.manual_seed(0)
     val, test = random_split(nontrain, [0.1, 0.9])
 
