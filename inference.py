@@ -7,11 +7,10 @@ import random
 import string
 import numpy as np
 
-from tools import Ensemble, CIFAR10_Dataset
-from argparse import ArgumentParser, Namespace, BooleanOptionalAction
+from tools import Ensemble, CIFAR10_Dataset, get_model_paths
+from argparse import ArgumentParser, BooleanOptionalAction
 
 
-from typing import List
 from torch import Tensor
 from pandas import DataFrame
 
@@ -33,21 +32,6 @@ DEFAULT_OOD_DATASET_CORRUPTIONS = [
 DEFAULT_DATASET_TYPES = [
     'out_of_distribution', 'train', 'test', 'cifar5m'
 ]
-
-
-def get_model_paths(args: Namespace) -> List[str]:
-    """Gets all paths to pytorch checkpoint files
-    """
-    all_model_paths = []
-    for warp in range(args.warps):
-
-        for idx in range(args.models_per_warp):
-            model_path = os.path.join(args.models_path,f'warp_{warp}', f'model_{idx}', f'step={args.step}.pt')
-            
-            if os.path.exists(model_path):
-                all_model_paths.append(model_path)
-    
-    return all_model_paths
 
 
 def get_datasets(args) -> DataFrame:
@@ -110,7 +94,11 @@ def get_logits(args, dataset) -> Tensor:
     """
     dataloader = DataLoader(dataset, batch_size=args.dataset_batch_size, num_workers=4)
 
-    model_paths = get_model_paths(args)
+    model_paths = get_model_paths(
+        args.models_path,
+        warps=args.warps,
+        models_per_warp=args.models_per_warp
+    )
     all_log_probs = []
 
     lig_trainer = Trainer(
@@ -132,7 +120,7 @@ def get_logits(args, dataset) -> Tensor:
         log_probs = torch.cat(lig_trainer.predict(models, dataloader))
         all_log_probs.append(log_probs)
     
-    all_log_probs = torch.cat(all_log_probs, dim = -2)
+    all_log_probs = torch.cat(all_log_probs, dim=-2)
     return all_log_probs
 
 
@@ -151,7 +139,8 @@ def run_pipeline_and_save(args):
     for dataset in get_datasets(args):
         all_data['datasets'].append(dataset)
         all_data['labels'].extend(dataset.targets)
-        all_data['corruption'].extend([dataset.corruption for _ in range(len(dataset))])
+        all_data['corruption'].extend(
+            [dataset.corruption for _ in range(len(dataset))])
 
     concat_dataset = ConcatDataset(all_data['datasets'])
     all_data.pop('datasets')
@@ -192,8 +181,8 @@ if __name__ == '__main__':
     )
     parser.add_argument('--save_path', type=str, default=DEFAULT_RES_SAVE_PATH)
     parser.add_argument(
-        '--dataset-distribution', type=str, 
-        choices=DEFAULT_DATASET_TYPES, 
+        '--dataset-distribution', type=str,
+        choices=DEFAULT_DATASET_TYPES,
         default=DEFAULT_DATASET_TYPES
     )
     default_random_id = random.choices(string.ascii_lowercase, k=10)
