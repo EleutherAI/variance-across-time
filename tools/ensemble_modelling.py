@@ -13,7 +13,6 @@ from pathlib import Path
 import numpy as np
 
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import WandbLogger
 from torch import nn, optim
 from torch.func import functional_call, stack_module_state
 from torch.optim.optimizer import Optimizer
@@ -28,7 +27,11 @@ NUM_STEPS = 2 ** 16
 
 class Ensemble(pl.LightningModule):
     def __init__(
-        self, seed: int, num_models: int, rsync_dest: str | None = None
+        self, 
+        seed: int, 
+        num_models: int, 
+        model_depths=[2, 2, 6, 2], 
+        model_hidden_sizes=[48, 96, 192, 384]
     ):
         """ConvNextV2 model ensemble. forward calls and grads are parallelized 
         with vmap across multiple models.
@@ -44,14 +47,17 @@ class Ensemble(pl.LightningModule):
         dtype = torch.float32
         self.models = nn.ModuleList()
         self.is_model_vectorized = False
+        
+        self.model_depths = model_depths
+        self.model_hidden_sizes = model_hidden_sizes
 
         for offset in range(num_models):
             torch.cuda.manual_seed_all(seed + offset)
             torch.manual_seed(seed + offset)
 
-            self.models.append(self.build_net().to(dtype))
+            self.models.append(self.build_net(model_depths, model_hidden_sizes).to(dtype))
 
-    def build_net(self) -> nn.Module:
+    def build_net(self, depths: list[int], hidden_sizes: list[int]) -> nn.Module:
         """Builds a single ConvNextV2 model
 
         Returns:
@@ -60,8 +66,8 @@ class Ensemble(pl.LightningModule):
         cfg = ConvNextV2Config(
             image_size=32,
             # Femto architecture
-            depths=[2, 2, 6, 2],
-            hidden_sizes=[48, 96, 192, 384],
+            depths=depths,
+            hidden_sizes=hidden_sizes,
             num_labels=10,
             # The default of 4 x 4 patches shrinks the image too aggressively for
             # low-resolution images like CIFAR-10

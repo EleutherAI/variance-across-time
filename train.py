@@ -18,6 +18,7 @@ from torch.utils.data import Dataset, random_split
 
 from tools.ensemble_modelling import Ensemble
 from torchvision.datasets import CIFAR10
+import torch
 
 import numpy as np
 import pytorch_lightning as pl
