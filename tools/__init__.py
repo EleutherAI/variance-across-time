@@ -6,3 +6,4 @@ from .dataset_utils import (
     get_logits,
     DEFAULT_DATASET_TYPES
 )
+from .pca import logit_pca, logit_class_pca

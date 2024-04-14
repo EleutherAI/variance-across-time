@@ -33,8 +33,8 @@ def produce_graphs(data: dict[str, pd.DataFrame], figure_title: str) -> go.Figur
     rows = len(data) // 4
     cols = 4
     fig = make_subplots(
-        rows=rows, 
-        cols=cols, 
+        rows=rows,
+        cols=cols,
         subplot_titles=list(data.keys()),
         shared_xaxes=True,
         shared_yaxes=True
