@@ -5,123 +5,17 @@ import os
 import torch
 import random
 import string
-import numpy as np
 
-from tools import Ensemble, CIFAR10_Dataset, get_model_paths
+from tools import get_datasets, get_logits, DEFAULT_DATASET_TYPES
 from argparse import ArgumentParser, BooleanOptionalAction
 
-
-from torch import Tensor
 from pandas import DataFrame
-
-from torch.utils.data import ConcatDataset, DataLoader
-from pytorch_lightning import Trainer
+from torch.utils.data import ConcatDataset
 from inference_stats import PIPELINE
-import torchvision.transforms as T
-from torchvision.datasets import CIFAR10
-
 
 DEFAULT_MODELS_PATH = './cifar-ckpts'
 DEFAULT_OOD_DATASET_PATH = './own/'
 DEFAULT_RES_SAVE_PATH = './datasets/'
-DEFAULT_OOD_DATASET_CORRUPTIONS = [
-    'brightness', 'frost', 'jpeg_compression', 'shot_noise', 'contrast', 'gaussian_blur', 
-    'snow', 'defocus_blur', 'gaussian_noise', 'motion_blur', 'spatter', 'elastic_transform', 
-    'glass_blur', 'pixelate', 'speckle_noise', 'fog', 'impulse_noise', 'saturate', 'zoom_blur'
-]
-DEFAULT_DATASET_TYPES = [
-    'out_of_distribution', 'train', 'test', 'cifar5m'
-]
-
-
-def get_datasets(args) -> DataFrame:
-    """Yields appropriate dataset based on dataset distributions
-
-    Args:
-        args (Namespace): Input arguments
-    
-    Yields:
-        (DataFrame) dataset from the given dataset distribution
-    """
-    if isinstance(args.dataset_distribution, list):
-        for dist in args.dataset_distribution:
-            args.dataset_distribution = dist
-            yield from get_datasets(args)
-    
-    if args.dataset_distribution == 'out_of_distribution':
-        for corruption in args.ood_dataset_corruptions:
-            data = np.load(os.path.join(args.ood_dataset_path, f'{corruption}_srs1000.npy'))
-            labels = np.load(os.path.join(args.ood_dataset_path, 'labels_srs1000.npy'))
-            yield CIFAR10_Dataset(data, labels, corruption)
-    
-    elif args.dataset_distribution == 'cifar5m':
-        data = np.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_images.npy'))
-        labels = np.load(os.path.join(args.ood_dataset_path, 'cifar5m_sample_labels.npy'))
-        yield CIFAR10_Dataset(data, labels, "cifar5m")
-
-    elif args.dataset_distribution == 'train':
-        trf = T.Compose([
-            T.RandomHorizontalFlip(),
-            T.RandomCrop(32, padding=4),
-            T.RandAugment(),
-            T.ToTensor(),
-        ])
-        train = CIFAR10(
-            root='./cifar-train', train=True, download=True, transform=trf,
-        )
-        train.corruption = 'train'
-        yield train
-        
-
-    elif args.dataset_distribution == 'test':
-        test = CIFAR10(
-            root='./cifar-test', train=False, download=True, transform=T.ToTensor(),
-        )
-        test.corruption = 'none'
-        yield test
-    else:
-        raise NotImplementedError(f"{args.dataset_distribution} is not implemented.")
-
-
-def get_logits(args, dataset) -> Tensor:
-    """Calculates log probabilities of samples of dataset across all models in all warps
-
-    Args:
-        args (Namespace): Passed input arguments
-
-    Returns:
-        log probabilities: (torch.Tensor of shape (dataset_size, num_models, num_classes))
-    """
-    dataloader = DataLoader(dataset, batch_size=args.dataset_batch_size, num_workers=4)
-
-    model_paths = get_model_paths(
-        args.models_path,
-        warps=args.warps,
-        models_per_warp=args.models_per_warp
-    )
-    all_log_probs = []
-
-    lig_trainer = Trainer(
-        accelerator = 'gpu',
-        devices = [args.gpu_id],
-        precision = '16-mixed'
-    )
-
-    for i in range(0, len(model_paths), args.models_per_gpu):
-        print(f"Iterating over models {i}...{min(i+args.models_per_gpu, len(model_paths))}")
-        curr_model_paths = model_paths[i:i+args.models_per_gpu]
-        
-        # Initializing with a random model seed, seed does not matter as we load them anyways
-        models = Ensemble(100, len(curr_model_paths),
-                          model_hidden_sizes=args.models_hidden_sizes)
-
-        models.from_pretrained(curr_model_paths)
-
-        log_probs = torch.cat(lig_trainer.predict(models, dataloader))
-        all_log_probs.append(log_probs)
-    
-    all_log_probs = torch.cat(all_log_probs, dim=-2)
-    return all_log_probs
 
 
 def run_pipeline_and_save(args):
@@ -130,13 +24,13 @@ def run_pipeline_and_save(args):
     Args:
         args (Namespace): Input arguments
     """
-    # all_results = []
     all_data = {
         'datasets': [],
         'labels': [],
         'corruption': []
     }
-    for dataset in get_datasets(args):
+
+    for dataset in get_datasets(args.dataset_distribution, args.ood_dataset_path):
         all_data['datasets'].append(dataset)
         all_data['labels'].extend(dataset.targets)
         all_data['corruption'].extend(
@@ -174,11 +68,6 @@ if __name__ == '__main__':
     parser.add_argument('--models-per-gpu', type=int, default=512)
     parser.add_argument('--dataset-batch-size', type=int, default=64)
     parser.add_argument('--ood-dataset-path', type=str, default=DEFAULT_OOD_DATASET_PATH)
-    parser.add_argument(
-        '--ood-dataset-corruptions', type=list, 
-        choices=DEFAULT_OOD_DATASET_CORRUPTIONS,
-        default=DEFAULT_OOD_DATASET_CORRUPTIONS
-    )
     parser.add_argument('--save_path', type=str, default=DEFAULT_RES_SAVE_PATH)
     parser.add_argument(
         '--dataset-distribution', type=str,

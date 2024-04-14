@@ -1,6 +1,29 @@
+import os
+from typing import List
+from itertools import product
+
 import torch
+from torch import Tensor
+import numpy as np
 from numpy import ndarray
 from torch.utils.data import Dataset
+from pandas import DataFrame
+import torchvision.transforms as T
+from torch.utils.data import DataLoader
+from pytorch_lightning import Trainer
+from torchvision.datasets import CIFAR10
+
+from tools.ensemble_modelling import Ensemble
+
+CIFARC_CORRUPTIONS = [
+    'brightness', 'frost', 'jpeg_compression', 'shot_noise', 'contrast', 'gaussian_blur', 
+    'snow', 'defocus_blur', 'gaussian_noise', 'motion_blur', 'spatter', 'elastic_transform', 
+    'glass_blur', 'pixelate', 'speckle_noise', 'fog', 'impulse_noise', 'saturate', 'zoom_blur'
+]
+
+DEFAULT_DATASET_TYPES = [
+    'cifarc', 'train', 'test', 'cifar5m'
+]
 
 
 class CIFAR10_Dataset(Dataset):
@@ -41,3 +64,102 @@ def get_model_paths(
             all_model_paths.append(model_path)
 
     return all_model_paths
+
+
+def get_datasets(dataset: list | str, dataset_path: str) -> DataFrame:
+    """Yields appropriate dataset based on dataset distributions
+
+    Args:
+        args (Namespace): Input arguments
+    
+    Yields:
+        (DataFrame) dataset from the given dataset distribution
+    """
+    if isinstance(dataset, list):
+        for dist in dataset:
+            yield from get_datasets(dist, dataset_path)
+    
+    elif dataset == 'cifarc':
+        for corruption in CIFARC_CORRUPTIONS:
+            data = np.load(os.path.join(dataset_path, f'{corruption}_srs1000.npy'))
+            labels = np.load(os.path.join(dataset_path, 'labels_srs1000.npy'))
+            yield CIFAR10_Dataset(data, labels, corruption)
+    
+    elif dataset == 'cifar5m':
+        data = np.load(os.path.join(dataset_path, 'cifar5m_sample_images.npy'))
+        labels = np.load(os.path.join(dataset_path, 'cifar5m_sample_labels.npy'))
+        yield CIFAR10_Dataset(data, labels, "cifar5m")
+
+    elif dataset == 'train':
+        trf = T.Compose([
+            T.RandomHorizontalFlip(),
+            T.RandomCrop(32, padding=4),
+            T.RandAugment(),
+            T.ToTensor(),
+        ])
+        train = CIFAR10(
+            root='./cifar-train', train=True, download=True, transform=trf,
+        )
+        train.corruption = 'train'
+        yield train
+        
+    elif dataset == 'test':
+        test = CIFAR10(
+            root='./cifar-test',
+            train=False,
+            download=True,
+            transform=T.ToTensor(),
+        )
+        test.corruption = 'none'
+        yield test
+    else:
+        raise NotImplementedError(f"{dataset} is not implemented.")
+
+
+def get_logits(
+        dataset: Dataset,
+        batch_size: int,
+        models_path: str,
+        models_hidden_sizes: list[int] = [48, 96, 192, 384],
+        warps: int = 128,
+        models_per_warp: int = 64,
+        models_per_gpu: int = 512,
+        gpu_id: int = 6) -> Tensor:
+    """Calculates log probabilities of samples of dataset across all models in all warps
+
+    Args:
+        args (Namespace): Passed input arguments
+
+    Returns:
+        log probabilities: (torch.Tensor of shape (dataset_size, num_models, num_classes))
+    """
+    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=4)
+
+    model_paths = get_model_paths(
+        models_path,
+        warps=warps,
+        models_per_warp=models_per_warp
+    )
+    all_log_probs = []
+
+    lig_trainer = Trainer(
+        accelerator='gpu',
+        devices=[gpu_id],
+        precision='16-mixed'
+    )
+
+    for i in range(0, len(model_paths), models_per_gpu):
+        print(f"Iterating over models {i}...{min(i+models_per_gpu, len(model_paths))}")
+        curr_model_paths = model_paths[i:i+models_per_gpu]
+        
+        # Initializing with a random model seed, seed does not matter as we load them anyways
+        models = Ensemble(100, len(curr_model_paths),
+                          model_hidden_sizes=models_hidden_sizes)
+
+        models.from_pretrained(curr_model_paths)
+
+        log_probs = torch.cat(lig_trainer.predict(models, dataloader))
+        all_log_probs.append(log_probs)
+    
+    all_log_probs = torch.cat(all_log_probs, dim=-2)
+    return all_log_probs

@@ -1,4 +1,4 @@
-"""
+""" TODO Delete and replace
 Script for taking logits of a dataset over all model checkpoints and computing 
 the variances for all logits, and logits for each individual classifier label. 
 """
