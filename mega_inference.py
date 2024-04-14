@@ -44,10 +44,15 @@ if __name__ == "__main__":
     os.makedirs(save_dir)
 
     # for each dataset, load dataset
-    for dataset_i, dataset in enumerate(get_datasets(args.datasets, args.fallback_dataset_path)):
+    for dataset_i, dataset in enumerate(
+        get_datasets(args.datasets, args.fallback_dataset_path)
+    ):
 
         # variances for all steps in this run-dataset combo
         dataset_variances = pd.DataFrame([])
+        
+        # dataset name
+        dataset_name = args.datasets[dataset_i]
 
         # for each step, run inference
         for step in args.steps:
@@ -65,7 +70,7 @@ if __name__ == "__main__":
 
             # save logits
             if args.save_logits:
-                filename = os.path.join(save_dir, f"{args.datasets[dataset_i]}_{step}_logits.pt")
+                filename = os.path.join(save_dir, f"{dataset_name}_{step}_logits.pt")
                 torch.save(logits, filename)
 
             # run pca
@@ -74,7 +79,7 @@ if __name__ == "__main__":
                 len(dataset_variances.columns), f"{step}", variances, True)
             
         # save variances and graphs
-        variances_filepath = os.path.join(save_dir, f"{args.datasets[dataset_i]}_variances.csv")
+        variances_filepath = os.path.join(save_dir, f"{dataset_name}_variances.csv")
         dataset_variances.to_csv(variances_filepath)
         
         # TODO graphs
