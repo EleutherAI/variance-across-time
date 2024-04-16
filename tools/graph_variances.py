@@ -30,8 +30,8 @@ def produce_graphs(data: dict[str, pd.DataFrame], figure_title: str) -> go.Figur
     cmap = LinearSegmentedColormap.from_list('custom', rgb_values)
 
     # Create a subplot grid
-    rows = len(data) // 4
-    cols = 4
+    rows = max(len(data) // 4, 1)
+    cols = min(len(data), 4)
     fig = make_subplots(
         rows=rows,
         cols=cols,
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     # We'll assume that we we see is what we get. If we get nothing, do nothing.
     variances = {title: pd.DataFrame() for title in titles}
     
-    for title, step in product(titles, np.power(2, range(20))):
+    for title, step in product(titles, [216, 240, 264, 288, 312, 336, 360, 384]):
         file_name = f"{step}_{title}_variances.csv"
         file_path = os.path.join(path, file_name)
         
@@ -105,7 +105,7 @@ if __name__ == "__main__":
         variances[title].insert(0, f"Step {step}", data['all'], True)
     
     # remove empty dfs
-    for title in variances:
+    for title in variances.keys():
         if len(variances[title]) == 0:
             del variances[title]
     
@@ -123,4 +123,5 @@ if __name__ == "__main__":
     output = Path(path_str)
     
     figure.write_image(output)
+    figure.show()
     

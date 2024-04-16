@@ -81,5 +81,3 @@ if __name__ == "__main__":
         # save variances and graphs
         variances_filepath = os.path.join(save_dir, f"{dataset_name}_variances.csv")
         dataset_variances.to_csv(variances_filepath)
-        
-        # TODO graphs

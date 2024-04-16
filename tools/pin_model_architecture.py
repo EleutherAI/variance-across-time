@@ -37,7 +37,7 @@ if __name__ == "__main__":
             # 1. Initialize Ensemble Models
             
             ensemble = Ensemble(
-                (size + remaining) * 10_000,  # to avoid seed collisions
+                (size + remaining) ** 2,  # to avoid seed collisions
                 batch,
                 model_depths=[2, 2, 6, 2],  # TODO add option for changing
                 model_hidden_sizes=[48, 96, size, 384]
