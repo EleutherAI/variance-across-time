@@ -124,7 +124,8 @@ def get_logits(
         warps: int = 128,
         models_per_warp: int = 64,
         models_per_gpu: int = 512,
-        gpu_id: int = 6) -> Tensor:
+        gpu_id: int = 6,
+        step: int = 0) -> Tensor:
     """Calculates log probabilities of samples of dataset across all models in all warps
 
     Args:
@@ -138,7 +139,8 @@ def get_logits(
     model_paths = get_model_paths(
         models_path,
         warps=warps,
-        models_per_warp=models_per_warp
+        models_per_warp=models_per_warp,
+        step=step
     )
     all_log_probs = []
 

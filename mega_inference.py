@@ -65,7 +65,8 @@ if __name__ == "__main__":
                 args.warps,
                 args.models_per_warp,
                 args.models_per_gpu,
-                args.gpu_id
+                args.gpu_id,
+                step=step
             )
 
             # save logits
