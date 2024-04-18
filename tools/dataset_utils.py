@@ -81,8 +81,8 @@ def get_datasets(dataset: list | str, dataset_path: str) -> DataFrame:
     
     elif dataset == 'cifarc':
         for corruption in CIFARC_CORRUPTIONS:
-            data = np.load(os.path.join(dataset_path, f'{corruption}_srs1000.npy'))
-            labels = np.load(os.path.join(dataset_path, 'labels_srs1000.npy'))
+            data = np.load(os.path.join(dataset_path, f'{corruption}.npy'))
+            labels = np.load(os.path.join(dataset_path, 'labels.npy'))
             yield CIFAR10_Dataset(data, labels, corruption)
     
     elif dataset == 'cifar5m':
