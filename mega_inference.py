@@ -41,7 +41,7 @@ if __name__ == "__main__":
     
     # make run output folder
     save_dir = os.path.join(args.save_path, args.run_id)
-    os.makedirs(save_dir)
+    os.makedirs(save_dir, exist_ok=True)
 
     # for each dataset, load dataset
     for dataset_i, dataset in enumerate(
@@ -58,28 +58,36 @@ if __name__ == "__main__":
         for step in args.steps:
             print(f"Starting inference for step {step}")
             
-            # TODO if matching logit file is found, skip computation
-            logits: torch.Tensor = get_logits(
-                dataset,
-                64,
-                args.models_path,
-                args.models_hidden_sizes,
-                args.warps,
-                args.models_per_warp,
-                args.models_per_gpu,
-                args.gpu_id,
-                step=step
-            )
+            # if matching logit file is found, skip computation
+            logit_filename = os.path.join(save_dir, f"{dataset_name}_{step}_logits.pt")
+            
+            if os.path.exists(logit_filename):
+                logits: torch.Tensor = torch.load(logit_filename)
+                print("Loaded logit from file!")
+            else:
+                logits: torch.Tensor = get_logits(
+                    dataset,
+                    64,
+                    args.models_path,
+                    args.models_hidden_sizes,
+                    args.warps,
+                    args.models_per_warp,
+                    args.models_per_gpu,
+                    args.gpu_id,
+                    step=step
+                )
 
-            # save logits
-            if args.save_logits:
-                filename = os.path.join(save_dir, f"{dataset_name}_{step}_logits.pt")
-                torch.save(logits, filename)
+                # save logits
+                if args.save_logits:
+                    torch.save(logits, logit_filename)
 
             # run pca
             try:
                 variances = logit_pca(logits.cuda(args.gpu_id)).cpu().numpy()
-                dataset_variances[f"step {step}"] = variances
+                new_column = pd.DataFrame({
+                    f'step {step}': variances
+                })
+                dataset_variances = pd.concat([dataset_variances, new_column], axis=1)
             except torch.cuda.OutOfMemoryError as oome:
                 print("CUDA OUT OF MEMORY")
                 print(torch.cuda.memory_summary())
