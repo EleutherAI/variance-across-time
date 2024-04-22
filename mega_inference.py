@@ -56,6 +56,8 @@ if __name__ == "__main__":
 
         # for each step, run inference
         for step in args.steps:
+            print(f"Starting inference for step {step}")
+            
             # TODO if matching logit file is found, skip computation
             logits: torch.Tensor = get_logits(
                 dataset,
@@ -75,9 +77,12 @@ if __name__ == "__main__":
                 torch.save(logits, filename)
 
             # run pca
-            variances = logit_pca(logits.cuda(args.gpu_id)).cpu().numpy()
-            dataset_variances.insert(
-                len(dataset_variances.columns), f"{step}", variances, True)
+            try:
+                variances = logit_pca(logits.cuda(args.gpu_id)).cpu().numpy()
+                dataset_variances[f"step {step}"] = variances
+            except torch.cuda.OutOfMemoryError as oome:
+                print("CUDA OUT OF MEMORY")
+                print(torch.cuda.memory_summary())
             
         # save variances and graphs
         variances_filepath = os.path.join(save_dir, f"{dataset_name}_variances.csv")
